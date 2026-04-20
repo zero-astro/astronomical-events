@@ -1,300 +1,340 @@
-"""SQLite database manager for astronomical events."""
+"""Database manager - SQLite operations for astronomical events."""
 
 import sqlite3
-import json
 import logging
-from pathlib import Path
-from datetime import datetime, timedelta
-from typing import Optional
 from dataclasses import dataclass, field
+from datetime import datetime, date
+from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class EventRecord:
-    """Represents an event stored in the database."""
-    id: int
+class Event:
+    """Represents an astronomical event."""
     news_id: str
     title: str
     event_date: datetime
-    rss_pub_date: datetime
-    description: str
-    event_type: str
-    priority: int
+    rss_pub_date: Optional[datetime] = None
+    description: str = ""
+    event_type: str = "unknown"
+    priority: int = 5
     visibility_level: Optional[int] = None
     thumbnail_url: Optional[str] = None
-    event_page_url: str = ""
+    event_page_url: Optional[str] = None
     is_notified: bool = False
-    created_at: Optional[datetime] = None
 
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "news_id": self.news_id,
-            "title": self.title,
-            "event_date": self.event_date.isoformat(),
-            "rss_pub_date": self.rss_pub_date.isoformat(),
-            "description": self.description[:200] + "..." if len(self.description) > 200 else self.description,
-            "event_type": self.event_type,
-            "priority": self.priority,
-            "visibility_level": self.visibility_level,
-            "thumbnail_url": self.thumbnail_url,
-            "event_page_url": self.event_page_url,
-            "is_notified": self.is_notified,
-        }
+    def __post_init__(self):
+        if isinstance(self.event_date, str):
+            self.event_date = datetime.fromisoformat(self.event_date)
 
 
 @dataclass
-class FetchLog:
-    """Represents a fetch operation log entry."""
-    id: int
+class FetchLogEntry:
+    """Represents a fetch log entry."""
     fetched_at: datetime
     items_fetched: int
     new_items: int
     status: str
     error_message: Optional[str] = None
 
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "fetched_at": self.fetched_at.isoformat(),
-            "items_fetched": self.items_fetched,
-            "new_items": self.new_items,
-            "status": self.status,
-            "error_message": self.error_message,
-        }
-
 
 class DatabaseManager:
-    """Manages SQLite database operations."""
+    """SQLite database manager for astronomical events."""
 
-    def __init__(self, db_path: str = "data/events.db"):
+    def __init__(self, db_path: str):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._connect()
+        self.conn = sqlite3.connect(str(self.db_path))
+        self.conn.row_factory = sqlite3.Row
+        self._create_tables()
 
-    def _connect(self) -> sqlite3.Connection:
-        """Create database connection and ensure schema exists."""
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")  # Better concurrency
-        conn.execute("PRAGMA foreign_keys=ON")
-        self._create_tables(conn)
-        self.conn = conn
-        return conn
+    def _create_tables(self):
+        """Create database tables if they don't exist."""
+        cursor = self.conn.cursor()
 
-    def _create_tables(self, conn: sqlite3.Connection):
-        """Create all database tables if they don't exist."""
-        conn.executescript("""
+        # Events table - stores all astronomical events
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                news_id TEXT UNIQUE NOT NULL,
+                news_id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 event_date DATETIME NOT NULL,
-                rss_pub_date DATETIME NOT NULL,
-                description TEXT,
-                event_type TEXT NOT NULL DEFAULT 'unknown',
-                priority INTEGER NOT NULL DEFAULT 5,
-                visibility_level INTEGER CHECK(visibility_level BETWEEN 1 AND 5),
+                rss_pub_date DATETIME,
+                description TEXT DEFAULT '',
+                event_type TEXT DEFAULT 'unknown',
+                priority INTEGER DEFAULT 5 CHECK(priority BETWEEN 1 AND 5),
+                visibility_level INTEGER CHECK(visibility_level IS NULL OR (visibility_level BETWEEN 1 AND 5)),
                 thumbnail_url TEXT,
-                event_page_url TEXT NOT NULL,
-                is_notified BOOLEAN DEFAULT FALSE,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
+                event_page_url TEXT,
+                is_notified INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
+        # Fetch log table - tracks RSS fetch operations
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS fetch_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                items_fetched INTEGER,
-                new_items INTEGER,
-                status TEXT NOT NULL,
+                items_fetched INTEGER DEFAULT 0,
+                new_items INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'unknown',
                 error_message TEXT
-            );
+            )
+        """)
 
+        # Config table - stores system configuration
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS config (
                 key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
+                value TEXT,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_events_event_date ON events(event_date);
-            CREATE INDEX IF NOT EXISTS idx_events_priority ON events(priority);
-            CREATE INDEX IF NOT EXISTS idx_events_notified ON events(is_notified);
-            CREATE INDEX IF NOT EXISTS idx_fetch_log_fetched_at ON fetch_log(fetched_at DESC);
-
-            INSERT OR IGNORE INTO config (key, value) VALUES
-                ('latitude', '43.139006'),
-                ('longitude', '-2.966625'),
-                ('timezone', 'Europe/Madrid'),
-                ('window_days', '15');
+            )
         """)
-        conn.commit()
+
+        self.conn.commit()
+        logger.info("Database tables created/verified")
 
     def insert_event(self, news_id: str, title: str, event_date: datetime,
-                      rss_pub_date: datetime, description: str, event_type: str = "unknown",
-                      priority: int = 5, visibility_level: Optional[int] = None,
-                      thumbnail_url: Optional[str] = None, event_page_url: str = "") -> bool:
-        """Insert a new event. Returns True if inserted, False if duplicate."""
+                     rss_pub_date: Optional[str] = None, description: str = "",
+                     event_type: str = "unknown", priority: int = 5,
+                     visibility_level: Optional[int] = None,
+                     thumbnail_url: Optional[str] = None,
+                     event_page_url: Optional[str] = None) -> bool:
+        """Insert or update an event in the database.
+
+        Args:
+            news_id: Unique identifier from RSS feed
+            title: Event title
+            event_date: When the event occurs
+            rss_pub_date: Original publication date string
+            description: Plain text description
+            event_type: Classified type (eclipse, meteor_shower, etc.)
+            priority: Priority level 1-5
+            visibility_level: Visibility requirement 1-5
+            thumbnail_url: URL to event image
+            event_page_url: Link to full event page
+
+        Returns:
+            True if inserted/updated successfully
+        """
+        cursor = self.conn.cursor()
+
+        # Convert datetime objects to ISO format strings for SQLite
+        event_date_str = event_date.isoformat() if isinstance(event_date, datetime) else str(event_date)
+
         try:
-            self.conn.execute(
-                """INSERT INTO events 
-                   (news_id, title, event_date, rss_pub_date, description, event_type, priority, visibility_level, thumbnail_url, event_page_url)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (news_id, title, event_date.isoformat(), rss_pub_date.isoformat(),
-                 description, event_type, priority, visibility_level, thumbnail_url, event_page_url)
-            )
+            cursor.execute("""
+                INSERT INTO events (news_id, title, event_date, rss_pub_date, description,
+                                   event_type, priority, visibility_level, thumbnail_url,
+                                   event_page_url, is_notified)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                ON CONFLICT(news_id) DO UPDATE SET
+                    title=excluded.title,
+                    event_date=excluded.event_date,
+                    description=excluded.description,
+                    event_type=excluded.event_type,
+                    priority=excluded.priority,
+                    visibility_level=excluded.visibility_level,
+                    thumbnail_url=excluded.thumbnail_url,
+                    event_page_url=excluded.event_page_url,
+                    updated_at=CURRENT_TIMESTAMP
+            """, (news_id, title, event_date_str, rss_pub_date, description,
+                  event_type, priority, visibility_level, thumbnail_url, event_page_url))
+
             self.conn.commit()
-            logger.info(f"Inserted event: {news_id} - {title[:50]}")
+            logger.info(f"Inserted/updated event: {news_id} - {title[:60]}")
             return True
-        except sqlite3.IntegrityError:
-            logger.debug(f"Event already exists: {news_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to insert event {news_id}: {e}")
+            self.conn.rollback()
             return False
 
-    def get_event(self, news_id: str) -> Optional[EventRecord]:
-        """Get a single event by news_id."""
-        row = self.conn.execute("SELECT * FROM events WHERE news_id = ?", (news_id,)).fetchone()
-        if not row:
-            return None
-        return self._row_to_event(row)
+    def get_upcoming_events(self, days: int = 15) -> list[Event]:
+        """Get events within the next N days.
 
-    def get_upcoming_events(self, days: int = 15, priority_max: Optional[int] = None) -> list[EventRecord]:
-        """Get upcoming events within the specified window.
-        
         Args:
-            days: Number of days to look ahead
-            priority_max: Only return events with priority <= this value (None = all)
-            
+            days: Number of days into the future (default 15)
+
         Returns:
-            List of EventRecord sorted by event_date ascending
+            List of Event objects sorted by event_date
         """
-        now = datetime.now()
-        future = now + timedelta(days=days)
-        
-        query = "SELECT * FROM events WHERE event_date BETWEEN ? AND ?"
-        params = [now.isoformat(), future.isoformat()]
-        
-        if priority_max is not None:
-            query += " AND priority <= ?"
-            params.append(priority_max)
-            
-        query += " ORDER BY event_date ASC, priority ASC"
-        
-        rows = self.conn.execute(query, params).fetchall()
-        return [self._row_to_event(row) for row in rows]
+        cursor = self.conn.cursor()
+        today = datetime.now().strftime("%Y-%m-%d")
+        future = (datetime.now().replace(hour=0, minute=0, second=0) +
+                  __import__("datetime").timedelta(days=days)).strftime("%Y-%m-%d")
 
-    def get_all_events(self, limit: int = 100) -> list[EventRecord]:
-        """Get all events (most recent first)."""
-        rows = self.conn.execute(
-            "SELECT * FROM events ORDER BY event_date DESC LIMIT ?", (limit,)
-        ).fetchall()
-        return [self._row_to_event(row) for row in rows]
+        cursor.execute("""
+            SELECT * FROM events
+            WHERE event_date >= ? AND event_date <= ?
+            ORDER BY event_date ASC, priority ASC
+        """, (today, future))
 
-    def get_unnotified_events(self, priority_max: int = 3) -> list[EventRecord]:
-        """Get events that haven't been notified yet."""
-        rows = self.conn.execute(
-            "SELECT * FROM events WHERE is_notified = FALSE AND priority <= ? ORDER BY event_date ASC",
-            (priority_max,)
-        ).fetchall()
-        return [self._row_to_event(row) for row in rows]
+        return [self._row_to_event(row) for row in cursor.fetchall()]
 
-    def mark_notified(self, news_id: str) -> bool:
-        """Mark an event as notified."""
-        cursor = self.conn.execute(
-            "UPDATE events SET is_notified = TRUE WHERE news_id = ?", (news_id,)
-        )
-        self.conn.commit()
-        return cursor.rowcount > 0
+    def get_unnotified_events(self, priority_max: int = 3) -> list[Event]:
+        """Get unnotified events with priority <= priority_max.
 
-    def log_fetch(self, items_fetched: int, new_items: int, status: str, error_message: Optional[str] = None):
-        """Log a fetch operation."""
-        self.conn.execute(
-            "INSERT INTO fetch_log (items_fetched, new_items, status, error_message) VALUES (?, ?, ?, ?)",
-            (items_fetched, new_items, status, error_message)
-        )
-        self.conn.commit()
+        Args:
+            priority_max: Maximum priority level to include (1=critical, 5=minor)
 
-    def get_fetch_history(self, limit: int = 10) -> list[FetchLog]:
-        """Get recent fetch log entries."""
-        rows = self.conn.execute(
-            "SELECT * FROM fetch_log ORDER BY fetched_at DESC LIMIT ?", (limit,)
-        ).fetchall()
-        return [self._row_to_fetch_log(row) for row in rows]
+        Returns:
+            List of Event objects sorted by event_date
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM events
+            WHERE is_notified = 0 AND priority <= ?
+            ORDER BY priority ASC, event_date ASC
+        """, (priority_max,))
 
-    def get_config(self, key: str) -> Optional[str]:
-        """Get a config value."""
-        row = self.conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
-        return row[0] if row else None
+        return [self._row_to_event(row) for row in cursor.fetchall()]
 
-    def set_config(self, key: str, value: str):
-        """Set or update a config value."""
-        self.conn.execute(
-            "INSERT OR REPLACE INTO config (key, value) VALUES (?, CURRENT_TIMESTAMP)",
-            (key, value)
-        )
-        # Fix: the above doesn't set updated_at properly with INSERT OR REPLACE
-        self.conn.execute(
-            "UPDATE config SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?",
-            (value, key)
-        )
-        self.conn.commit()
+    def mark_as_notified(self, news_id: str) -> bool:
+        """Mark an event as notified.
+
+        Args:
+            news_id: Event identifier
+
+        Returns:
+            True if updated successfully
+        """
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE events SET is_notified = 1, updated_at = CURRENT_TIMESTAMP
+                WHERE news_id = ?
+            """, (news_id,))
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Failed to mark event {news_id} as notified: {e}")
+            self.conn.rollback()
+            return False
 
     def count_events(self) -> int:
         """Count total events in database."""
-        row = self.conn.execute("SELECT COUNT(*) FROM events").fetchone()
-        return row[0] if row else 0
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM events")
+        return cursor.fetchone()[0]
 
     def count_unnotified(self) -> int:
         """Count unnotified events."""
-        row = self.conn.execute("SELECT COUNT(*) FROM events WHERE is_notified = FALSE").fetchone()
-        return row[0] if row else 0
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM events WHERE is_notified = 0")
+        return cursor.fetchone()[0]
 
-    def cleanup_old_events(self, days: int = 30):
-        """Remove events older than specified days (soft delete by marking)."""
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
-        cursor = self.conn.execute(
-            "DELETE FROM events WHERE event_date < ? AND is_notified = TRUE",
-            (cutoff,)
-        )
-        self.conn.commit()
-        logger.info(f"Cleaned up {cursor.rowcount} old events")
+    def log_fetch(self, items_fetched: int, new_items: int, status: str,
+                  error_message: Optional[str] = None):
+        """Log a fetch operation.
 
-    def _row_to_event(self, row) -> EventRecord:
-        """Convert a database row to an EventRecord."""
-        return EventRecord(
-            id=row["id"],
-            news_id=row["news_id"],
-            title=row["title"],
-            event_date=datetime.fromisoformat(row["event_date"]),
-            rss_pub_date=datetime.fromisoformat(row["rss_pub_date"]),
-            description=row["description"] or "",
-            event_type=row["event_type"],
-            priority=row["priority"],
-            visibility_level=row["visibility_level"],
-            thumbnail_url=row["thumbnail_url"],
-            event_page_url=row["event_page_url"],
-            is_notified=bool(row["is_notified"]),
-            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
-        )
+        Args:
+            items_fetched: Total items fetched from RSS
+            new_items: Number of new events inserted
+            status: success/partial/failed
+            error_message: Error details if failed
+        """
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO fetch_log (items_fetched, new_items, status, error_message)
+                VALUES (?, ?, ?, ?)
+            """, (items_fetched, new_items, status, error_message))
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to log fetch: {e}")
 
-    def _row_to_fetch_log(self, row) -> FetchLog:
-        """Convert a database row to a FetchLog."""
-        return FetchLog(
-            id=row["id"],
-            fetched_at=datetime.fromisoformat(row["fetched_at"]),
+    def get_fetch_history(self, limit: int = 10) -> list[FetchLogEntry]:
+        """Get recent fetch history.
+
+        Args:
+            limit: Number of entries to return (default 10)
+
+        Returns:
+            List of FetchLogEntry objects sorted by fetched_at DESC
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM fetch_log
+            ORDER BY fetched_at DESC
+            LIMIT ?
+        """, (limit,))
+
+        return [FetchLogEntry(
+            fetched_at=row["fetched_at"],
             items_fetched=row["items_fetched"],
             new_items=row["new_items"],
             status=row["status"],
-            error_message=row["error_message"],
+            error_message=row["error_message"]
+        ) for row in cursor.fetchall()]
+
+    def get_event_by_id(self, news_id: str) -> Optional[Event]:
+        """Get a single event by its ID.
+
+        Args:
+            news_id: Event identifier
+
+        Returns:
+            Event object or None if not found
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM events WHERE news_id = ?", (news_id,))
+        row = cursor.fetchone()
+        return self._row_to_event(row) if row else None
+
+    def get_events_by_type(self, event_type: str) -> list[Event]:
+        """Get all events of a specific type.
+
+        Args:
+            event_type: Event classification (eclipse, meteor_shower, etc.)
+
+        Returns:
+            List of Event objects sorted by event_date
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM events WHERE event_type = ?
+            ORDER BY event_date ASC
+        """, (event_type,))
+
+        return [self._row_to_event(row) for row in cursor.fetchall()]
+
+    def get_events_by_priority(self, priority: int) -> list[Event]:
+        """Get all events with a specific priority level.
+
+        Args:
+            priority: Priority level 1-5
+
+        Returns:
+            List of Event objects sorted by event_date
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM events WHERE priority = ?
+            ORDER BY event_date ASC
+        """, (priority,))
+
+        return [self._row_to_event(row) for row in cursor.fetchall()]
+
+    def _row_to_event(self, row: sqlite3.Row) -> Event:
+        """Convert a database row to an Event object."""
+        return Event(
+            news_id=row["news_id"],
+            title=row["title"],
+            event_date=datetime.fromisoformat(row["event_date"]),
+            rss_pub_date=row["rss_pub_date"] and datetime.fromisoformat(row["rss_pub_date"]),
+            description=row["description"] or "",
+            event_type=row["event_type"] or "unknown",
+            priority=int(row["priority"]) if row["priority"] else 5,
+            visibility_level=int(row["visibility_level"]) if row["visibility_level"] else None,
+            thumbnail_url=row["thumbnail_url"],
+            event_page_url=row["event_page_url"],
+            is_notified=bool(row["is_notified"]),
         )
 
     def close(self):
-        """Close database connection."""
-        if hasattr(self, "conn"):
-            self.conn.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+        """Close the database connection."""
+        self.conn.close()

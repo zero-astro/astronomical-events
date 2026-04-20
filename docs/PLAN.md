@@ -254,20 +254,57 @@ CREATE INDEX idx_fetch_log_fetched_at ON fetch_log(fetched_at DESC);
 
 ---
 
-### Phase 2: Event Parsing & Classification
+### Phase 2: Event Parsing & Classification — COMPLETED ✅
 **Goal:** Extract structured data from each event and classify by priority.
 
-**Tasks:**
-1. [ ] Implement title parser (extract event date + event name)
-2. [ ] HTML description → plain text converter
-3. [ ] Event page scraper:
-   - Fetch thumbnail URL (`style=hugeteaser`)
-   - Parse visibility level icon and alt text
-4. [ ] Event type classifier (regex/pattern matching on title)
-5. [ ] Priority tier assignment based on classification rules
-6. [ ] Update database with parsed fields
+**Completion Date:** April 20, 2026
 
-**Deliverable:** All events in DB have `event_type`, `priority`, `visibility_level`, and `thumbnail_url`.
+**Tasks Completed:**
+1. [x] Title parser (extract event date + event name) — `event_parser.py`
+2. [x] HTML description → plain text converter — `event_parser.py`
+3. [x] Event page scraper:
+   - Fetch thumbnail URL (`style=hugeteaser`) — `page_scraper.py`
+   - Parse visibility level icon and alt text — `page_scraper.py`
+   - **Fix:** Clamp visibility_level to 1-5 range (in-the-sky.org returns values up to 6)
+4. [x] Event type classifier with improved pattern matching — `classifier.py`:
+   - Eclipse detection → P1 Critical
+   - Nova/Supernova detection → P1 Critical
+   - Meteor shower peak detection → P2 High
+   - Non-peak meteor showers → P3 Medium (improved)
+   - Occultation detection with Europe visibility check → P2 High
+   - Planet close approach (non-Moon) → P3 Medium
+   - Comet perihelion → P3 Medium
+   - Planet conjunctions → P4 Low
+   - Dwarf planet opposition → P4 Low
+   - Moon involvement events → P5 Minor
+   - **New:** Generic event fallback (`_looks_like_generic_event`) → P4 Low
+   - **Default:** Unknown events → P5 Minor (lowest priority)
+5. [x] Priority tier assignment based on classification rules — `classifier.py`
+6. [x] Database update with parsed fields — `db_manager.py`
+
+**Key Fixes Applied:**
+- Visibility level clamping: in-the-sky.org returns values 1-6, but DB constraint is 1-5. Added clamp logic in `_extract_visibility()`.
+- Classifier improved to detect "Conjunction of X and Y" patterns (planet-only) → P4 instead of unknown.
+- Meteor shower detection extended to non-peak events → P3.
+- Unknown events default to P5 Minor (as requested).
+
+**Pipeline Results:**
+```
+Total items:     12
+New events:      12
+Existing:        0
+Classified:      12
+Pages scraped:   12
+Total in DB:     13
+
+Classification Summary:
+  P2 (High):       1 event — occultation
+  P3 (Medium):     4 events — close_approach, comet, meteor_shower
+  P4 (Low):        4 events — conjunction, opposition
+  P5 (Minor):      4 events — moon_conjunction
+```
+
+**Deliverable:** ✅ All events in DB have `event_type`, `priority`, `visibility_level`, and `thumbnail_url`. Pipeline runs end-to-end without errors.
 
 ---
 
@@ -444,10 +481,10 @@ astronomical-events-notify/
 
 ## 12. Estimated Timeline
 
-| Phase | Duration | Dependencies |
+| Phase | Duration | Dependencies | Status |
 |-------|----------|-------------|
-| Phase 1: Core Infrastructure | 2-3 days | None |
-| Phase 2: Event Parsing & Classification | 2-3 days | Phase 1 |
+| Phase 1: Core Infrastructure | 2-3 days | None | ✅ Done |
+| Phase 2: Event Parsing & Classification | 2-3 days | Phase 1 | ✅ Done |
 | Phase 3: Notification System | 2-3 days | Phase 2 |
 | Phase 4: Scheduling & Automation | 1-2 days | Phase 3 |
 | Phase 5: Polish & Monitoring | 2-3 days | Phase 4 |

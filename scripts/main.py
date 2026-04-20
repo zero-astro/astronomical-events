@@ -2,7 +2,8 @@
 """CLI entry point for Astronomical Events Notification System.
 
 Usage:
-    python main.py fetch          Fetch RSS and store in database
+    python main.py fetch          Fetch RSS and store in database (Phase 1)
+    python main.py process        Full pipeline: fetch + classify + scrape thumbnails (Phase 2)
     python main.py status         Show upcoming events summary
     python main.py list [days]    List all stored events (default: 15 days)
     python main.py notify-now     Manually trigger notification check
@@ -20,6 +21,9 @@ from datetime import datetime, timedelta
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from rss_fetcher import fetch_rss, parse_items, get_feed_metadata
+from event_parser import parse_rss_item as parse_single_item
+from classifier import classify_event, format_priority_label, format_visibility_label
+from page_scraper import fetch_event_page, parse_page
 from db_manager import DatabaseManager
 
 # Configure logging
@@ -64,7 +68,7 @@ def load_config():
 
 
 def cmd_fetch(config):
-    """Fetch RSS feed and store new events in database."""
+    """Fetch RSS feed and store new events in database (Phase 1)."""
     logger.info("=" * 60)
     logger.info("Astronomical Events - Fetch")
     logger.info("=" * 60)
@@ -90,29 +94,28 @@ def cmd_fetch(config):
     if meta.get("last_build_date"):
         logger.info(f"Last build date: {meta['last_build_date']}")
 
-    # Store events
+    # Store events (Phase 1 style - no classification yet)
     new_count = 0
     existing_count = 0
 
     for item in items:
-        # Parse event date from title
-        event_date = parse_event_date(item.title)
+        event_date = _parse_event_date(item.title)
 
         if not event_date:
             logger.warning(f"Could not parse date from title: {item.title}")
             continue
 
         inserted = db.insert_event(
-            news_id=item.news_id,
-            title=item.title,
+            news_id=item["news_id"],
+            title=item["title"],
             event_date=event_date,
-            rss_pub_date=item.pub_date,
-            description=strip_html(item.description),
-            event_type="unknown",  # Will be classified in Phase 2
+            rss_pub_date=str(item.get("pub_date", "")),
+            description=item["description_text"],
+            event_type="unknown",  # Phase 2 will classify
             priority=5,           # Default low priority (Phase 2)
             visibility_level=None,  # Will be scraped from page (Phase 2)
             thumbnail_url=None,     # Will be fetched from page (Phase 2)
-            event_page_url=item.event_page_url,
+            event_page_url=item.get("link"),
         )
 
         if inserted:
@@ -133,6 +136,107 @@ def cmd_fetch(config):
     logger.info(f"   New events:  {new_count}")
     logger.info(f"   Existing:    {existing_count}")
     logger.info(f"   Total in DB: {db.count_events()}")
+
+    db.close()
+    return True
+
+
+def cmd_process(config):
+    """Full pipeline: fetch + classify + scrape thumbnails (Phase 2)."""
+    logger.info("=" * 60)
+    logger.info("Astronomical Events - Full Pipeline (Fetch + Classify + Scrape)")
+    logger.info("=" * 60)
+
+    db = DatabaseManager(config["db_path"])
+
+    # Step 1: Fetch RSS
+    feed = fetch_rss(config["rss_url"])
+    if not feed:
+        logger.error("Failed to fetch RSS feed.")
+        return False
+
+    items = parse_items(feed)
+    if not items:
+        logger.warning("No valid items found in RSS feed.")
+        db.log_fetch(0, 0, "success", "No valid items")
+        return True
+
+    meta = get_feed_metadata(feed)
+    logger.info(f"Feed: {meta.get('title', 'Unknown')}")
+
+    # Step 2 & 3: Classify and store with metadata
+    new_count = 0
+    existing_count = 0
+    classified_count = 0
+    scraped_count = 0
+
+    for item in items:
+        event_date = _parse_event_date(item["title"])
+        if not event_date:
+            logger.warning(f"Could not parse date from title: {item['title']}")
+            continue
+
+        # Classify the event (Phase 2)
+        classification = classify_event(
+            item["title"],
+            item.get("description_text", "")
+        )
+
+        # Scrape page for thumbnail and visibility level (Phase 2)
+        thumbnail_url = None
+        visibility_level = None
+
+        if item.get("link"):
+            try:
+                html = fetch_event_page(item["link"])
+                if html:
+                    page_data = parse_page(html)
+                    if page_data and page_data.is_visible:
+                        thumbnail_url = page_data.thumbnail_url
+                        visibility_level = page_data.visibility_level
+                        scraped_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to scrape page for {item.get('news_id')}: {e}")
+
+        # Insert/update event with full metadata
+        inserted = db.insert_event(
+            news_id=item["news_id"],
+            title=item["title"],
+            event_date=event_date,
+            rss_pub_date=str(item.get("pub_date", "")),
+            description=item["description_text"],
+            event_type=classification.event_type,
+            priority=classification.priority,
+            visibility_level=visibility_level,
+            thumbnail_url=thumbnail_url,
+            event_page_url=item.get("link"),
+        )
+
+        if inserted:
+            new_count += 1
+        else:
+            existing_count += 1
+
+        classified_count += 1
+
+    # Log fetch operation
+    db.log_fetch(
+        items_fetched=len(items),
+        new_items=new_count,
+        status="success" if new_count > 0 or existing_count == len(items) else "partial",
+    )
+
+    logger.info("-" * 40)
+    logger.info("Full pipeline complete!")
+    logger.info(f"   Total items:     {len(items)}")
+    logger.info(f"   New events:      {new_count}")
+    logger.info(f"   Existing:        {existing_count}")
+    logger.info(f"   Classified:      {classified_count}")
+    logger.info(f"   Pages scraped:   {scraped_count}")
+    logger.info(f"   Total in DB:     {db.count_events()}")
+
+    # Show classification summary
+    _print_classification_summary(db)
 
     db.close()
     return True
@@ -159,14 +263,19 @@ def cmd_status(config):
         logger.info("")
         logger.info("Upcoming events:")
         for i, event in enumerate(events[:20], 1):
-            priority_emoji = ["", "P1-Critical", "P2-High", "P3-Medium", "P4-Low", "P5-Minor"][event.priority]
+            priority_label = format_priority_label(event.priority)
             notified = "[NOTIFIED]" if event.is_notified else "[NEW]"
 
+            vis_str = ""
+            if event.visibility_level:
+                vis_str = f" | {format_visibility_label(event.visibility_level)}"
+
             logger.info(
-                f"  {i}. {priority_emoji} | "
+                f"  {i}. {priority_label} | "
                 f"{notified} | "
                 f"{event.event_date.strftime('%d %b')} | "
                 f"{event.title[:60]}"
+                + vis_str
             )
 
         if len(events) > 20:
@@ -201,11 +310,13 @@ def cmd_list(config):
 
         for event in p_events:
             notified = "[NOTIFIED]" if event.is_notified else "[NEW]"
-            vis = f"(Level {event.visibility_level})" if event.visibility_level else "(Unknown)"
+            vis_str = ""
+            if event.visibility_level:
+                vis_str = f" | {format_visibility_label(event.visibility_level)}"
 
             logger.info(
                 f"  - {event.event_date.strftime('%Y-%m-%d %H:%M')} | "
-                f"{notified} {vis}"
+                f"{notified} {vis_str}"
             )
             logger.info(f"    {event.title}")
 
@@ -227,7 +338,17 @@ def cmd_notify_now(config):
     else:
         logger.info(f"Found {len(unnotified)} unnotified high-priority events:")
         for event in unnotified:
-            logger.info(f"  - P{event.priority}: {event.title}")
+            priority_label = format_priority_label(event.priority)
+            vis_str = ""
+            if event.visibility_level:
+                vis_str = f" | {format_visibility_label(event.visibility_level)}"
+
+            logger.info(
+                f"  - {priority_label} | "
+                f"{event.event_date.strftime('%d %b')} | "
+                f"{event.title[:60]}"
+                + vis_str
+            )
 
         # TODO: Send Telegram notifications (Phase 3)
         logger.info("\nNotifications not yet implemented. Coming in Phase 3.")
@@ -261,16 +382,26 @@ def cmd_history(config):
     db.close()
 
 
-def parse_event_date(title):
-    """Parse event date from RSS title.
+def _print_classification_summary(db):
+    """Print a summary of event classifications."""
+    logger.info("\nClassification Summary:")
+    for p in range(1, 6):
+        events = db.get_events_by_priority(p)
+        if not events:
+            continue
 
-    Examples:
-        "23 Apr 2026 (3 days away): 136108 Haumea at opposition"
-        "22 Apr 2026 (1 day away): Lyrid meteor shower 2026"
+        type_counts = {}
+        for e in events:
+            etype = e.event_type or "unknown"
+            type_counts[etype] = type_counts.get(etype, 0) + 1
 
-    Returns datetime or None if parsing fails.
-    """
-    # Pattern: DD Mon YYYY at the start of title
+        logger.info(f"  P{p}: {len(events)} event(s)")
+        for etype, count in sorted(type_counts.items()):
+            logger.info(f"    - {etype}: {count}")
+
+
+def _parse_event_date(title):
+    """Parse event date from RSS title."""
     match = re.match(r"(\d{1,2}) (\w+) (\d{4})", title)
     if not match:
         return None
@@ -293,21 +424,6 @@ def parse_event_date(title):
         return None
 
 
-def strip_html(html_text):
-    """Strip HTML tags from text."""
-    # Remove HTML tags
-    clean = re.sub(r"<[^>]+>", "", html_text)
-    # Decode common HTML entities
-    clean = (clean.replace("&amp;", "&")
-                 .replace("&lt;", "<")
-                 .replace("&gt;", ">")
-                 .replace("&quot;", '"')
-                 .replace("&#39;", "'"))
-    # Collapse whitespace
-    clean = re.sub(r"\s+", " ", clean).strip()
-    return clean
-
-
 def main():
     """Main CLI entry point."""
     if len(sys.argv) < 2:
@@ -319,6 +435,7 @@ def main():
 
     commands = {
         "fetch": cmd_fetch,
+        "process": cmd_process,
         "status": cmd_status,
         "list": cmd_list,
         "notify-now": cmd_notify_now,

@@ -1,122 +1,114 @@
-"""RSS Feed Fetcher for in-the-sky.org astronomical events."""
+"""RSS fetcher - download and parse in-the-sky.org RSS feed."""
 
-import feedparser
 import logging
-from dataclasses import dataclass, field
-from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
+
+try:
+    import feedparser
+except ImportError:
+    raise ImportError("feedparser is required. Install with: pip install feedparser")
+
+from event_parser import parse_rss_item
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class RSSItem:
-    """Represents a single item from the RSS feed."""
-    news_id: str          # Extracted from URL path (e.g., 20260423_13_100)
-    title: str
-    link: str
-    description: str      # Raw HTML
-    pub_date: datetime
-    guid: str
+def fetch_rss(url: str) -> feedparser.FeedParserDict | None:
+    """Fetch RSS feed from in-the-sky.org.
 
-    @property
-    def event_page_url(self) -> str:
-        """Return the full URL to the event page."""
-        return self.link
-
-
-def extract_news_id(url: str) -> Optional[str]:
-    """Extract the news ID from a URL.
-    
-    Examples:
-        https://in-the-sky.org/news.php?id=20260423_13_100 -> 20260423_13_100
-        https://in-the-sky.org/news.php?id=2026_19_CK25R030_100 -> 2026_19_CK25R030_100
-    """
-    if "id=" in url:
-        return url.split("id=")[-1].split("&")[0]
-    return None
-
-
-def fetch_rss(url: str, timeout: int = 30) -> Optional[feedparser.FeedParserDict]:
-    """Fetch and parse the RSS feed.
-    
     Args:
-        url: RSS feed URL
-        timeout: HTTP request timeout in seconds
-        
+        url: Full RSS feed URL
+
     Returns:
-        Parsed feedparser object, or None on failure
+        Parsed feed object or None on failure
     """
+    logger.info(f"Fetching RSS from {url}")
+
     try:
-        logger.info(f"Fetching RSS from {url}")
-        response = feedparser.parse(url)
-        
-        if response.bozo and not response.entries:
-            logger.warning(f"RSS parse error: {response.bozo_exception}")
-            return None
-        
-        if not response.entries:
-            logger.warning("No entries found in RSS feed")
-            return None
-            
-        logger.info(f"Fetched {len(response.entries)} entries from RSS feed")
-        return response
-        
+        import urllib.request
+        import urllib.error
+
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "AstronomicalEvents/0.1 (bot)",
+            "Accept": "application/rss+xml, application/xml, text/xml",
+        })
+
+        with urllib.request.urlopen(req, timeout=30) as response:
+            if response.status == 200:
+                data = response.read()
+                feed = feedparser.parse(data)
+
+                if not feed.entries:
+                    logger.warning("RSS feed has no entries")
+                    return None
+
+                logger.info(f"Fetched {len(feed.entries)} entries from RSS feed")
+                return feed
+            else:
+                logger.error(f"HTTP {response.status} fetching RSS")
+                return None
+
     except Exception as e:
         logger.error(f"Failed to fetch RSS: {e}")
         return None
 
 
-def parse_items(feed) -> list[RSSItem]:
-    """Parse feedparser result into structured RSSItem objects.
-    
+def parse_items(feed) -> list[dict]:
+    """Parse all items from an RSS feed into structured data.
+
     Args:
         feed: feedparser FeedParserDict object
-        
+
     Returns:
-        List of RSSItem objects
+        List of parsed item dicts
     """
+    if not feed or not hasattr(feed, "entries"):
+        return []
+
     items = []
     for entry in feed.entries:
-        news_id = extract_news_id(entry.get("link", ""))
-        if not news_id:
-            logger.warning(f"Could not extract news_id from {entry.get('link', 'unknown')}")
-            continue
-            
-        # Parse pubDate
-        pub_date = None
-        if entry.get("published_parsed"):
-            try:
-                pub_date = datetime(*entry.published_parsed[:6])
-            except Exception as e:
-                logger.warning(f"Could not parse published date: {e}")
-        
-        item = RSSItem(
-            news_id=news_id,
-            title=entry.get("title", ""),
-            link=entry.get("link", ""),
-            description=entry.get("description", ""),
-            pub_date=pub_date or datetime.now(),
-            guid=entry.get("guid", entry.get("link", "")),
-        )
-        items.append(item)
-    
+        parsed = parse_rss_item(entry)
+        if parsed and parsed.get("event_date"):
+            items.append(parsed)
+
     logger.info(f"Parsed {len(items)} valid RSS items")
     return items
 
 
 def get_feed_metadata(feed) -> dict:
     """Extract metadata from the feed.
-    
-    Returns dict with channel info, last build date, etc.
+
+    Args:
+        feed: feedparser FeedParserDict object
+
+    Returns:
+        Dict with title, last_build_date, etc.
     """
-    if not feed.channel:
+    if not feed or not hasattr(feed, "feed"):
         return {}
-    
-    return {
-        "title": feed.channel.get("title", ""),
-        "link": feed.channel.get("link", ""),
-        "description": feed.channel.get("description", ""),
-        "language": feed.channel.get("language", ""),
-        "last_build_date": feed.channel.get("lastBuildDate", ""),
+
+    meta = {
+        "title": getattr(feed.feed, "title", ""),
+        "subtitle": getattr(feed.feed, "subtitle", ""),
+        "link": getattr(feed.feed, "href", ""),
+        "last_build_date": getattr(feed.feed, "updated", ""),
     }
+    return meta
+
+
+def fetch_and_parse(url: str) -> tuple[list[dict], dict]:
+    """Fetch RSS and parse all items in one call.
+
+    Args:
+        url: Full RSS feed URL
+
+    Returns:
+        Tuple of (items_list, metadata_dict)
+    """
+    feed = fetch_rss(url)
+    if not feed:
+        return [], {}
+
+    items = parse_items(feed)
+    meta = get_feed_metadata(feed)
+    return items, meta
