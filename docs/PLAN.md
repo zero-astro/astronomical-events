@@ -238,19 +238,19 @@ CREATE INDEX idx_fetch_log_fetched_at ON fetch_log(fetched_at DESC);
 **Goal:** Fetch RSS, store in SQLite, basic CLI tooling.
 
 **Tasks:**
-1. [ ] Create project structure (`src/`, `config/`, `tests/`)
-2. [ ] Set up Python virtual environment with dependencies:
+1. [x] Create project structure (`src/`, `config/`, `tests/`)
+2. [x] Set up Python virtual environment with dependencies:
    - `feedparser` (RSS parsing)
    - `sqlite3` (built-in) or `aiosqlite` (async)
    - `python-telegram-bot` or `requests` (Telegram API)
    - `beautifulsoup4` (HTML parsing for event pages)
    - `schedule` or `apscheduler` (task scheduling)
-3. [ ] Implement database schema and migrations
-4. [ ] Implement RSS fetcher with error handling
-5. [ ] Store fetched items in SQLite (deduplication by `news_id`)
-6. [ ] CLI command: `python src/fetch.py --status` to view stored events
+3. [x] Implement database schema and migrations
+4. [x] Implement RSS fetcher with error handling
+5. [x] Store fetched items in SQLite (deduplication by `news_id`)
+6. [x] CLI command: `python src/fetch.py --status` to view stored events
 
-**Deliverable:** Working pipeline — RSS → SQLite, queryable via CLI.
+**Deliverable:** ✅ Working pipeline — RSS → SQLite, queryable via CLI. Completed: `scripts/main.py` (fetch/status/list/history commands), `src/rss_fetcher.py`, `src/db_manager.py`, `.gitignore`.
 
 ---
 
