@@ -3,15 +3,17 @@ name: astronomical-events
 description: >-
   Fetch and notify about important astronomical events from in-the-sky.org.
   Periodically checks RSS feed, stores events in SQLite, classifies by priority,
-  and sends Telegram notifications for eclipses, comets, meteor showers, occultations, etc.
-  Use when the user wants to track astronomical events or receive sky event alerts.
+  and outputs structured notifications for OpenClaw to route through any channel.
+  Use when the user wants to track sky events or receive astronomical alerts.
 ---
 
 # Astronomical Events Notification Skill
 
 ## Overview
 
-Fetches astronomical news from in-the-sky.org RSS feed, stores them in SQLite, classifies by priority, and sends Telegram notifications.
+Fetches astronomical news from in-the-sky.org RSS feed, stores them in SQLite, classifies by priority, and outputs structured notifications for OpenClaw routing.
+
+**OpenClaw Integration:** This skill does NOT require a Telegram bot token. Instead, it outputs deterministic JSON to stdout that OpenClaw can route through any channel (Telegram, WhatsApp, etc.) via heartbeat/cron triggers.
 
 ## Usage
 
@@ -25,10 +27,12 @@ python3 /home/urtzai/.openclaw/skills/astronomical-events/scripts/main.py notify
 ## Configuration
 
 Set environment variables in `.env`:
-- `TELEGRAM_BOT_TOKEN` — Telegram bot token
-- `TELEGRAM_CHAT_ID` — Target chat ID for notifications
 - `RSS_URL` — RSS feed URL (default: in-the-sky.org DFAN)
 - `LATITUDE` / `LONGITUDE` — Observer location
+- `FETCH_INTERVAL_MINUTES` — How often to fetch (default: 60)
+- `NOTIFICATION_WINDOW_DAYS` — Days ahead to track events (default: 15)
+
+**No Telegram bot token required.** OpenClaw handles channel routing.
 
 ## Priority Tiers
 
@@ -43,3 +47,37 @@ Set environment variables in `.env`:
 ## Visibility Levels (1-5)
 
 Level 1: Naked eye | Level 2: Binoculars | Level 3: Small telescope | Level 4: Medium telescope | Level 5: Large telescope
+
+## Output Format (Deterministic)
+
+When `notify-now` is called, the skill outputs structured JSON to stdout:
+
+```json
+{
+  "schema_version": "1.0",
+  "type": "astronomical_events",
+  "batch_label": "P1-P2 High Priority",
+  "count": 3,
+  "events": [
+    {
+      "news_id": "abc123",
+      "title": "Total Lunar Eclipse",
+      "event_date": "2026-09-18T00:00:00",
+      "time_label": "89 days away",
+      "priority": 1,
+      "priority_emoji": "🔴",
+      "event_type": "eclipse",
+      "is_notified": false,
+      "visibility_level": 1,
+      "visibility_label": "Naked eye"
+    }
+  ],
+  "generated_at": "2026-04-21T07:00:00"
+}
+```
+
+**Fixed schema keys:** `schema_version`, `type`, `batch_label`, `count`, `events[]`, `generated_at`
+
+Each event in `events[]` has fixed keys: `news_id`, `title`, `event_date`, `time_label`, `priority`, `priority_emoji`, `event_type`, `is_notified`, plus optional `visibility_level`, `visibility_label`, `thumbnail_url`, `event_page_url`.
+
+This deterministic format ensures consistent rendering across all channels.

@@ -1,263 +1,143 @@
-"""Notification system - Telegram notifications for astronomical events.
+"""Notification system - Astronomical event notifications for OpenClaw.
 
-Handles:
-- P1/P2: Immediate individual notifications with images
-- P3: Batched notifications (up to 5 per message)
-- P4/P5: Daily digest of all upcoming events
-- Thumbnail attachment support
-- Retry logic with exponential backoff
+This module outputs structured notification data that OpenClaw can route
+through any channel (Telegram, WhatsApp, etc.) via heartbeat/cron triggers.
+
+Usage:
+    python3 scripts/main.py notify-now   # Outputs JSON to stdout
+    
+Output format is deterministic and machine-readable so the skill works
+consistently regardless of which messaging channel delivers it.
 """
 
-import os
+import json
 import logging
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
-
-try:
-    from telegram import Bot
-    from telegram.error import TelegramError, TimedOut, BadRequest
-except ImportError:
-    raise ImportError(
-        "python-telegram-bot is required. Install with: pip install python-telegram-bot"
-    )
 
 from db_manager import DatabaseManager, Event
 from classifier import get_priority_emoji, format_visibility_label
 
 logger = logging.getLogger(__name__)
 
-# Retry configuration
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 2
+
+# Deterministic output schema version
+SCHEMA_VERSION = "1.0"
 
 
-class NotificationError(Exception):
-    """Raised when notification sending fails."""
-    pass
+def _format_event_for_output(event: Event) -> dict:
+    """Format a single event into a deterministic JSON-serializable dict.
 
-
-def _get_bot(token: str) -> Bot:
-    return Bot(token=token, parse_mode="HTML")
-
-
-def _send_with_retry(bot: Bot, func, *args, **kwargs):
-    last_error = None
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            return func(*args, **kwargs)
-        except TimedOut as e:
-            last_error = e
-            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-            logger.warning(f"Timeout on attempt {attempt}/{MAX_RETRIES}, retrying in {delay}s")
-            time.sleep(delay)
-        except BadRequest as e:
-            raise NotificationError(f"Bad request: {e.message}") from e
-        except TelegramError as e:
-            last_error = e
-            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-            logger.warning(f"Telegram error on attempt {attempt}/{MAX_RETRIES}: {e}, retrying in {delay}s")
-            time.sleep(delay)
-
-    raise NotificationError(
-        f"All {MAX_RETRIES} retries failed. Last error: {last_error}"
-    ) from last_error
-
-
-def _format_event_message(event: Event, compact: bool = False) -> str:
-    emoji = get_priority_emoji(event.priority)
-    priority_label = f"P{event.priority}"
-
+    Returns a fixed-schema dict so consumers always know the structure.
+    """
     today = datetime.now()
-    event_date = event.event_date
-    delta_days = (event_date.date() - today.date()).days
+    delta_days = (event.event_date.date() - today.date()).days
 
     if delta_days < 0:
-        date_str = "Passed"
+        time_label = "past"
     elif delta_days == 0:
-        date_str = "Today!"
+        time_label = "today"
     elif delta_days == 1:
-        date_str = "Tomorrow"
+        time_label = "tomorrow"
     else:
-        date_str = f"{event_date.strftime('%d %b')} ({delta_days} days)"
+        time_label = f"{delta_days} days away"
 
-    vis_str = ""
+    result = {
+        "news_id": event.news_id,
+        "title": event.title,
+        "event_date": event.event_date.isoformat(),
+        "time_label": time_label,
+        "priority": event.priority,
+        "priority_emoji": get_priority_emoji(event.priority),
+        "event_type": event.event_type or "unknown",
+        "is_notified": bool(event.is_notified),
+    }
+
     if event.visibility_level:
-        vis_str = f"\nVisibility: {format_visibility_label(event.visibility_level)}"
+        result["visibility_level"] = event.visibility_level
+        result["visibility_label"] = format_visibility_label(event.visibility_level)
 
-    desc_str = ""
-    if not compact and event.description:
-        desc_text = event.description[:200]
-        if len(event.description) > 200:
-            desc_text += "..."
-        desc_str = f"\n\n{desc_text}"
-
-    link_str = ""
-    if event.event_page_url:
-        link_str = f'\n\n<a href="{event.event_page_url}">View details</a>'
-
-    message = (
-        f"*{priority_label}* — {event.title}\n"
-        f"{date_str}{vis_str}{desc_str}{link_str}"
-    )
-    return message
-
-
-def _send_event_with_image(
-    bot: Bot, chat_id: str, event: Event, message_text: str
-) -> bool:
     if event.thumbnail_url:
-        try:
-            _send_with_retry(
-                bot,
-                bot.send_photo,
-                chat_id=chat_id,
-                photo=event.thumbnail_url,
-                caption=message_text,
-                parse_mode="HTML",
-                disable_notification=event.priority <= 2,
-            )
-            logger.info(f"Sent notification with image for: {event.title[:50]}")
-            return True
-        except NotificationError as e:
-            logger.warning(f"Failed to send photo ({event.thumbnail_url}): {e}")
-        except Exception as e:
-            logger.warning(f"Photo send failed, falling back to text: {e}")
+        result["thumbnail_url"] = event.thumbnail_url
 
-    try:
-        _send_with_retry(
-            bot,
-            bot.send_message,
-            chat_id=chat_id,
-            text=message_text,
-            parse_mode="HTML",
-            disable_notification=event.priority <= 2,
-            disable_web_page_preview=True,
-        )
-        logger.info(f"Sent notification (text only) for: {event.title[:50]}")
-        return True
-    except NotificationError as e:
-        logger.error(f"Failed to send text notification: {e}")
-        return False
+    if event.event_page_url:
+        result["event_page_url"] = event.event_page_url
+
+    # Truncate description to fixed length for determinism
+    if event.description:
+        result["description"] = event.description[:200]
+        if len(event.description) > 200:
+            result["description_truncated"] = True
+
+    return result
 
 
-def _send_batch_notification(
-    bot: Bot, chat_id: str, events: list[Event], batch_label: str
-) -> int:
-    if not events:
-        return 0
+def _format_notification_message(events: list[dict], batch_label: str) -> dict:
+    """Format a notification message in deterministic structure.
 
-    lines = [f"*{batch_label}* — {len(events)} event(s)\n"]
-    for i, event in enumerate(events[:5], 1):
-        emoji = get_priority_emoji(event.priority)
-        date_str = event.event_date.strftime("%d %b")
-        lines.append(f"{i}. {emoji} {date_str} — {event.title}")
-
-    message_text = "\n".join(lines)
-
-    try:
-        _send_with_retry(
-            bot,
-            bot.send_message,
-            chat_id=chat_id,
-            text=message_text,
-            parse_mode="HTML",
-            disable_notification=True,
-        )
-        logger.info(f"Sent batch notification ({len(events)} events): {batch_label}")
-        return len(events)
-    except NotificationError as e:
-        logger.error(f"Failed to send batch notification: {e}")
-        return 0
+    Returns a dict with fixed keys that OpenClaw can render consistently
+    across all channels (Telegram, WhatsApp, etc.).
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "type": "astronomical_events",
+        "batch_label": batch_label,
+        "count": len(events),
+        "events": events,
+        "generated_at": datetime.now().isoformat(),
+    }
 
 
-def _send_daily_digest(
-    bot: Bot, chat_id: str, all_events: list[Event]
-) -> int:
-    if not all_events:
-        return 0
+def _build_human_readable(notifications: list[dict]) -> str:
+    """Build a human-readable message from structured notification data.
 
-    groups = {}
-    for event in all_events:
-        p = event.priority
-        if p not in groups:
-            groups[p] = []
-        groups[p].append(event)
+    This ensures consistent formatting regardless of channel.
+    Uses plain text with clear structure — no markdown tables (WhatsApp/Discord).
+    """
+    lines = []
 
-    lines = [f"*Daily Sky Digest* — {datetime.now().strftime('%d %b %Y')}"]
-    lines.append(f"Total upcoming events: {len(all_events)}\n")
+    for notif in notifications:
+        label = notif["batch_label"]
+        count = notif["count"]
+        lines.append(f"📋 {label} ({count} event(s))")
 
-    for p in sorted(groups.keys()):
-        emoji = get_priority_emoji(p)
-        count = len(groups[p])
-        lines.append(f"{emoji} *P{p}* ({count}):")
+        for evt in notif["events"]:
+            emoji = evt.get("priority_emoji", "")
+            date_str = evt.get("time_label", "unknown")
+            title = evt["title"]
+            vis = ""
+            if "visibility_label" in evt:
+                vis = f" | {evt['visibility_label']}"
 
-        for event in groups[p][:3]:
-            date_str = event.event_date.strftime("%d %b")
-            lines.append(f"  - {date_str}: {event.title}")
+            lines.append(f"{emoji} P{evt['priority']} | {date_str} | {title}{vis}")
 
-        if len(groups[p]) > 3:
-            lines.append(f"  ... and {len(groups[p]) - 3} more")
+        lines.append("")  # separator between batches
 
-    message_text = "\n".join(lines)
-
-    try:
-        _send_with_retry(
-            bot,
-            bot.send_message,
-            chat_id=chat_id,
-            text=message_text,
-            parse_mode="HTML",
-            disable_notification=True,
-        )
-        logger.info(f"Sent daily digest ({len(all_events)} events)")
-        return len(all_events)
-    except NotificationError as e:
-        logger.error(f"Failed to send daily digest: {e}")
-        return 0
+    return "\n".join(lines)
 
 
 def send_notifications(config: dict) -> dict:
     """Main notification dispatch function.
 
-    Processes unnotified events and sends appropriate Telegram notifications.
+    Processes unnotified events and outputs structured notifications.
+    Returns a summary dict with stats.
 
     Args:
-        config: Configuration dict with telegram_bot_token, telegram_chat_id, etc.
+        config: Configuration dict (currently unused, kept for API compatibility)
 
     Returns:
         Dict with stats: {sent_immediate, sent_batch, sent_digest, failed}
     """
-    bot_token = config.get("telegram_bot_token")
-    chat_id = config.get("telegram_chat_id")
-
-    if not bot_token or not chat_id:
-        logger.warning("Telegram credentials not configured. Skipping notifications.")
-        return {"sent_immediate": 0, "sent_batch": 0, "sent_digest": 0, "failed": 0}
-
     db = DatabaseManager(config["db_path"])
 
     try:
-        bot = _get_bot(bot_token)
-
-        # Verify bot is reachable
-        try:
-            bot.get_me()
-            logger.info("Telegram bot authenticated successfully")
-        except TelegramError as e:
-            logger.error(f"Failed to authenticate Telegram bot: {e}")
-            return {"sent_immediate": 0, "sent_batch": 0, "sent_digest": 0, "failed": 0}
-
-        stats = {"sent_immediate": 0, "sent_batch": 0, "sent_digest": 0, "failed": 0}
-
         # Get unnotified events (P1-P3)
         all_unnotified = db.get_unnotified_events(priority_max=3)
 
         if not all_unnotified:
             logger.info("No new high-priority events to notify.")
-            return stats
+            return {"sent_immediate": 0, "sent_batch": 0, "sent_digest": 0, "failed": 0}
 
         logger.info(f"Found {len(all_unnotified)} unnotified events (P1-P3)")
 
@@ -266,35 +146,39 @@ def send_notifications(config: dict) -> dict:
         p2_events = [e for e in all_unnotified if e.priority == 2]
         p3_events = [e for e in all_unnotified if e.priority == 3]
 
-        # P1/P2: Immediate individual notifications with images
-        immediate_events = p1_events + p2_events
-        for event in immediate_events:
-            message_text = _format_event_message(event, compact=False)
-            success = _send_event_with_image(bot, chat_id, event, message_text)
+        notifications = []
+        stats = {"sent_immediate": 0, "sent_batch": 0, "sent_digest": 0, "failed": 0}
 
-            if success:
+        # P1/P2: Immediate individual events
+        immediate_events = p1_events + p2_events
+        if immediate_events:
+            formatted = [_format_event_for_output(e) for e in immediate_events]
+            notifications.append(_format_notification_message(formatted, "P1-P2 High Priority"))
+
+            # Mark as notified
+            for event in immediate_events:
                 db.mark_as_notified(event.news_id)
                 stats["sent_immediate"] += 1
-            else:
-                stats["failed"] += 1
 
-        # P3: Batched notifications (up to 5 per message)
+        # P3: Batched (up to 5 per batch)
         if p3_events:
             batch_size = 5
             for i in range(0, len(p3_events), batch_size):
                 batch = p3_events[i:i + batch_size]
-                sent = _send_batch_notification(bot, chat_id, batch, "P3 Medium Priority")
+                formatted = [_format_event_for_output(e) for e in batch]
+                notifications.append(_format_notification_message(formatted, "P3 Medium Priority"))
 
                 for event in batch:
                     db.mark_as_notified(event.news_id)
-                    stats["sent_batch"] += 1 if sent > 0 else 0
+                    stats["sent_batch"] += 1
 
         # P4/P5: Daily digest (all upcoming events)
         window_days = int(config.get("window_days", "15"))
         all_upcoming = db.get_upcoming_events(days=window_days)
 
         if all_upcoming:
-            _send_daily_digest(bot, chat_id, all_upcoming)
+            formatted = [_format_event_for_output(e) for e in all_upcoming]
+            notifications.append(_format_notification_message(formatted, "Daily Digest (P4-P5)"))
             stats["sent_digest"] = len(all_upcoming)
 
     except Exception as e:
@@ -302,6 +186,17 @@ def send_notifications(config: dict) -> dict:
         return {"sent_immediate": 0, "sent_batch": 0, "sent_digest": 0, "failed": 1}
     finally:
         db.close()
+
+    # Output structured notifications to stdout (JSON lines format)
+    for notif in notifications:
+        print(json.dumps(notif, ensure_ascii=False))
+
+    # Also output human-readable version
+    readable = _build_human_readable(notifications)
+    if readable.strip():
+        logger.info("NOTIFICATION_OUTPUT_START")
+        logger.info(readable)
+        logger.info("NOTIFICATION_OUTPUT_END")
 
     logger.info(
         f"Notifications complete — Immediate: {stats['sent_immediate']}, "

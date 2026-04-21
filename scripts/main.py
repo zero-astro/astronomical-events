@@ -330,7 +330,7 @@ def cmd_notify_now(config):
     logger.info("Astronomical Events - Notify Now")
     logger.info("=" * 60)
 
-    # Phase 3: Telegram notifications
+    # Phase 3: OpenClaw-native notification output
     stats = send_notifications(config)
     logger.info("-" * 40)
     logger.info(f"Immediate: {stats['sent_immediate']} | Batch: {stats['sent_batch']} | Digest: {stats['sent_digest']} | Failed: {stats['failed']}")
