@@ -1,4 +1,8 @@
-"""Page scraper - extract thumbnail and visibility level from event pages."""
+"""Page scraper - extract thumbnail and visibility level from event pages.
+
+Integrates with the cache layer to reduce redundant HTTP requests.
+Caches event page HTML content for configurable TTL periods.
+"""
 
 import re
 import logging
@@ -21,6 +25,9 @@ IMAGE_BASE = "https://in-the-sky.org"
 THUMBNAIL_STYLE = "hugeteaser"
 LEVEL_ICON_PATTERN = re.compile(r"level(\d+)_icon\.png", re.IGNORECASE)
 
+# Cache configuration for page content (1 hour TTL by default)
+PAGE_CACHE_TTL = 3600
+
 
 @dataclass
 class PageData:
@@ -34,16 +41,41 @@ class PageData:
         return self.visibility_level is not None and self.thumbnail_url is not None
 
 
-def fetch_event_page(url: str, timeout: int = 15) -> str | None:
-    """Fetch the HTML content of an event page.
+def fetch_event_page(url: str, timeout: int = 15, use_cache: bool = True) -> str | None:
+    """Fetch the HTML content of an event page with optional caching.
 
     Args:
         url: Full URL to the event page on in-the-sky.org
         timeout: HTTP request timeout in seconds
+        use_cache: Whether to use cached data if available (default: True)
 
     Returns:
         Raw HTML string or None on failure
     """
+    # Try cache first
+    if use_cache:
+        from cache import get_cache
+        cache = get_cache()
+        cached = cache.get("page", url)
+        if cached:
+            logger.debug(f"Cache hit for page: {url}")
+            return cached
+
+    # Fetch from network
+    html = _fetch_page(url, timeout)
+
+    # Cache the result
+    if html and use_cache:
+        from cache import get_cache
+        cache = get_cache()
+        cache.set("page", url, html, ttl=PAGE_CACHE_TTL)
+        logger.debug(f"Cached page: {url} (ttl={PAGE_CACHE_TTL}s)")
+
+    return html
+
+
+def _fetch_page(url: str, timeout: int) -> str | None:
+    """Fetch HTML from network without caching."""
     try:
         import urllib.request
         import urllib.error

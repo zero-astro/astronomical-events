@@ -11,6 +11,7 @@ Usage:
     python main.py schedule       Start scheduler daemon (Phase 4)
     python main.py schedule --run-once   Run one scheduler cycle and exit
     python main.py health         Health check (JSON output, exit codes: 0=healthy, 1=degraded, 2=unhealthy)
+    python main.py dashboard      Start web dashboard (Phase 5)
 """
 
 import sys
@@ -41,6 +42,7 @@ from scheduler import (
     cmd_schedule_daemon,
     cmd_health,
 )
+from dashboard import cmd_dashboard
 
 # Configure logging
 logging.basicConfig(
@@ -472,6 +474,7 @@ def main():
         "notify-now": cmd_notify_now,
         "schedule": cmd_schedule,
         "health": cmd_health,
+        "dashboard": cmd_dashboard,
         "history": cmd_history,
     }
 
