@@ -68,7 +68,14 @@ def classify_event(title: str, description_text: str = "") -> Classification:
         classification.event_type = "occultation"
         # Check if visible from user's location (Europe)
         classification.is_occultation_visible = _is_visible_from_europe(desc_lower, title_lower)
-        classification.priority = 2
+        
+        # Distinguish between lunar occultations (common, lower priority) 
+        # and asteroid/stellar occultations (rare, higher priority)
+        is_lunar = "lunar" in title_lower or "moon" in title_lower
+        if is_lunar:
+            classification.priority = 4  # Common event
+        else:
+            classification.priority = 2  # Rare/interesting event
         return classification
 
     # P3: Medium - Planet close approaches (non-Moon), Comet perihelion

@@ -57,6 +57,24 @@ class TestEventClassifier(unittest.TestCase):
         self.assertEqual(result.priority, 5)
         self.assertEqual(result.event_type, 'moon_conjunction')
 
+    def test_classify_lunar_occultation(self):
+        """Lunar occultations should be P4 priority (common event)."""
+        result = classify_event(
+            title='Lunar occultation of Beta Tauri',
+            description_text='The Moon passes in front of the star.'
+        )
+        self.assertEqual(result.priority, 4)
+        self.assertEqual(result.event_type, 'occultation')
+
+    def test_classify_asteroid_occultation(self):
+        """Asteroid occultations should be P2 priority (rare event)."""
+        result = classify_event(
+            title='Stellar occultation by asteroid 704 Tama',
+            description_text='An asteroid will pass in front of a star.'
+        )
+        self.assertEqual(result.priority, 2)
+        self.assertEqual(result.event_type, 'occultation')
+
     def test_classify_unknown(self):
         """Unknown event types should be P5 priority with type 'unknown'."""
         result = classify_event(

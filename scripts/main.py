@@ -117,10 +117,10 @@ def cmd_fetch(config):
     existing_count = 0
 
     for item in items:
-        event_date = _parse_event_date(item.title)
+        event_date = _parse_event_date(item["title"])
 
         if not event_date:
-            logger.warning(f"Could not parse date from title: {item.title}")
+            logger.warning(f"Could not parse date from title: {item["title"]}")
             continue
 
         inserted = db.insert_event(
