@@ -47,6 +47,46 @@ Set environment variables in `.env`:
 ## Visibility Levels (1-5)
 
 Level 1: Naked eye | Level 2: Binoculars | Level 3: Small telescope | Level 4: Medium telescope | Level 5: Large telescope
+## Scheduling & Automation (Phase 4)
+
+The skill includes a built-in scheduler daemon for fully automated operation.
+
+### Daemon Mode
+```bash
+python3 scripts/main.py schedule              # Start continuous daemon
+python3 scripts/main.py schedule --run-once   # Run one cycle and exit
+```
+
+**Jobs:**
+- **Fetch job:** Every `FETCH_INTERVAL_MINUTES` (default: 60) — fetches RSS, classifies events
+- **Notify job:** After each fetch — dispatches notifications for new events
+- **Daily digest:** At 08:00 Europe/Madrid — summarizes all upcoming events
+
+### Systemd Service
+Install as a persistent service:
+```bash
+sudo cp scripts/astronomical-events.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now astronomical-events
+```
+
+**Management:**
+```bash
+sudo systemctl status astronomical-events    # Check status
+sudo journalctl -u astronomical-events       # View logs
+sudo systemctl restart astronomical-events   # Restart
+```
+
+### Health Check
+```bash
+python3 scripts/main.py health               # JSON output, exit codes: 0=healthy, 1=degraded, 2=unhealthy
+```
+
+Checks database connectivity, RSS feed reachability, and logging directory.
+
+### Logging
+Logs are written to `data/logs/astronomical_events.log` in structured JSON format with daily rotation (10MB max, 5 backups).
+
 
 ## Output Format (Deterministic)
 

@@ -334,12 +334,12 @@ Classification Summary:
 **Goal:** Fully automated background service.
 
 **Tasks:**
-1. [ ] Implement cron-like scheduling (hourly RSS fetch)
-2. [ ] Daily digest job (e.g., at 08:00 Europe/Madrid)
-3. [ ] Systemd service or supervisor config for persistence
-4. [ ] Logging with rotation (structured JSON logs)
-5. [ ] Health check endpoint / CLI command
-6. [ ] Configuration via environment variables or `.env` file
+1. ✅ Implement cron-like scheduling (hourly RSS fetch)
+2. ✅ Daily digest job (e.g., at 08:00 Europe/Madrid)
+3. ✅ Systemd service config for persistence
+4. ✅ Logging with rotation (structured JSON logs)
+5. ✅ Health check CLI command
+6. ✅ Configuration via environment variables or `.env` file
 
 **Deliverable:** Fully automated, self-healing background service.
 
@@ -486,7 +486,7 @@ astronomical-events-notify/
 | Phase 1: Core Infrastructure | 2-3 days | None | ✅ Done |
 | Phase 2: Event Parsing & Classification | 2-3 days | Phase 1 | ✅ Done |
 | Phase 3: Notification System | 2-3 days | Phase 2 | ✅ Done |
-| Phase 4: Scheduling & Automation | 1-2 days | Phase 3 |
+| Phase 4: Scheduling & Automation | 1-2 days | Phase 3 | ✅ Done |
 | Phase 5: Polish & Monitoring | 2-3 days | Phase 4 |
 
 **Total estimated:** 9-14 development days (part-time)

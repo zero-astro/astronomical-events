@@ -6,14 +6,18 @@ Usage:
     python main.py process        Full pipeline: fetch + classify + scrape thumbnails (Phase 2)
     python main.py status         Show upcoming events summary
     python main.py list [days]    List all stored events (default: 15 days)
-    python main.py notify-now     Trigger Telegram notifications (Phase 3)
+    python main.py notify-now     Trigger notifications (Phase 3)
     python main.py history        Show recent fetch log entries
+    python main.py schedule       Start scheduler daemon (Phase 4)
+    python main.py schedule --run-once   Run one scheduler cycle and exit
+    python main.py health         Health check (JSON output, exit codes: 0=healthy, 1=degraded, 2=unhealthy)
 """
 
 import sys
 import os
 import re
 import logging
+import argparse
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -26,6 +30,17 @@ from classifier import classify_event, format_priority_label, format_visibility_
 from page_scraper import fetch_event_page, parse_page
 from db_manager import DatabaseManager
 from notification import send_notifications
+from scheduler import (
+    load_config,
+    setup_logging,
+    run_fetch_pipeline,
+    run_notify,
+    Scheduler,
+    health_check,
+    cmd_schedule_run_once,
+    cmd_schedule_daemon,
+    cmd_health,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -326,6 +341,7 @@ def cmd_list(config):
 
 def cmd_notify_now(config):
     """Manually trigger notification check."""
+    setup_logging()
     logger.info("=" * 60)
     logger.info("Astronomical Events - Notify Now")
     logger.info("=" * 60)
@@ -334,6 +350,39 @@ def cmd_notify_now(config):
     stats = send_notifications(config)
     logger.info("-" * 40)
     logger.info(f"Immediate: {stats['sent_immediate']} | Batch: {stats['sent_batch']} | Digest: {stats['sent_digest']} | Failed: {stats['failed']}")
+
+
+def cmd_schedule(config):
+    """Start scheduler daemon or run one cycle.
+
+    Usage:
+        python main.py schedule              # Start daemon mode (continuous)
+        python main.py schedule --run-once   # Run one cycle and exit
+    """
+    setup_logging()
+    parser = argparse.ArgumentParser(description="Scheduler")
+    parser.add_argument("--run-once", action="store_true", help="Run one cycle and exit")
+    args, _ = parser.parse_known_args()
+
+    if args.run_once:
+        cmd_schedule_run_once(config)
+    else:
+        cmd_schedule_daemon(config)
+
+
+def cmd_health(config):
+    """Health check - outputs JSON status to stdout.
+
+    Exit codes: 0=healthy, 1=degraded, 2=unhealthy
+    Checks: database connectivity, RSS feed reachability, logging directory.
+    """
+    result = health_check(config)
+    if result["status"] == "healthy":
+        sys.exit(0)
+    elif result["status"] == "degraded":
+        sys.exit(1)
+    else:
+        sys.exit(2)
 
 
 
@@ -421,6 +470,8 @@ def main():
         "status": cmd_status,
         "list": cmd_list,
         "notify-now": cmd_notify_now,
+        "schedule": cmd_schedule,
+        "health": cmd_health,
         "history": cmd_history,
     }
 
