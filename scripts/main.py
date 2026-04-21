@@ -6,7 +6,7 @@ Usage:
     python main.py process        Full pipeline: fetch + classify + scrape thumbnails (Phase 2)
     python main.py status         Show upcoming events summary
     python main.py list [days]    List all stored events (default: 15 days)
-    python main.py notify-now     Manually trigger notification check
+    python main.py notify-now     Trigger Telegram notifications (Phase 3)
     python main.py history        Show recent fetch log entries
 """
 
@@ -25,6 +25,7 @@ from event_parser import parse_rss_item as parse_single_item
 from classifier import classify_event, format_priority_label, format_visibility_label
 from page_scraper import fetch_event_page, parse_page
 from db_manager import DatabaseManager
+from notification import send_notifications
 
 # Configure logging
 logging.basicConfig(
@@ -329,31 +330,12 @@ def cmd_notify_now(config):
     logger.info("Astronomical Events - Notify Now")
     logger.info("=" * 60)
 
-    # Phase 3: Telegram notifications will be implemented here
-    db = DatabaseManager(config["db_path"])
-    unnotified = db.get_unnotified_events(priority_max=3)
+    # Phase 3: Telegram notifications
+    stats = send_notifications(config)
+    logger.info("-" * 40)
+    logger.info(f"Immediate: {stats['sent_immediate']} | Batch: {stats['sent_batch']} | Digest: {stats['sent_digest']} | Failed: {stats['failed']}")
 
-    if not unnotified:
-        logger.info("No new high-priority events to notify.")
-    else:
-        logger.info(f"Found {len(unnotified)} unnotified high-priority events:")
-        for event in unnotified:
-            priority_label = format_priority_label(event.priority)
-            vis_str = ""
-            if event.visibility_level:
-                vis_str = f" | {format_visibility_label(event.visibility_level)}"
 
-            logger.info(
-                f"  - {priority_label} | "
-                f"{event.event_date.strftime('%d %b')} | "
-                f"{event.title[:60]}"
-                + vis_str
-            )
-
-        # TODO: Send Telegram notifications (Phase 3)
-        logger.info("\nNotifications not yet implemented. Coming in Phase 3.")
-
-    db.close()
 
 
 def cmd_history(config):
