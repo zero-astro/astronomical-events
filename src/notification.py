@@ -24,6 +24,11 @@ from mastodon_client import (
     format_mastodon_status,
     format_mastodon_digest
 )
+from telegram_notifier import (
+    load_telegram_config,
+    send_telegram_notification,
+    send_telegram_digest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +146,10 @@ def send_notifications(config: dict) -> dict:
     # Check if Mastodon is configured
     mastodon_config = load_mastodon_config()
     mastodon_enabled = bool(mastodon_config)
+    
+    # Check if Telegram is configured
+    telegram_config = load_telegram_config()
+    telegram_enabled = bool(telegram_config)
 
     try:
         # Get unnotified events (P1-P3)
@@ -175,6 +184,10 @@ def send_notifications(config: dict) -> dict:
                 if mastodon_enabled:
                     status = format_mastodon_status(_format_event_for_output(event))
                     post_to_mastodon(status, mastodon_config)
+                
+                # Send Telegram notification if enabled
+                if telegram_enabled:
+                    send_telegram_notification(telegram_config, _format_event_for_output(event))
 
         # P3: Batched (up to 5 per batch)
         if p3_events:
@@ -192,6 +205,10 @@ def send_notifications(config: dict) -> dict:
                     if mastodon_enabled:
                         status = format_mastodon_status(_format_event_for_output(event))
                         post_to_mastodon(status, mastodon_config)
+                
+                    # Send Telegram notification if enabled
+                    if telegram_enabled:
+                        send_telegram_notification(telegram_config, _format_event_for_output(event))
 
         # P4/P5: Daily digest (all upcoming events)
         window_days = int(config.get("window_days", "15"))
@@ -206,6 +223,10 @@ def send_notifications(config: dict) -> dict:
             if mastodon_enabled and len(all_upcoming) > 0:
                 digest_status = format_mastodon_digest(formatted)
                 post_to_mastodon(digest_status, mastodon_config)
+            
+            # Send Telegram digest if enabled
+            if telegram_enabled and len(all_upcoming) > 0:
+                send_telegram_digest(telegram_config, formatted)
 
     except Exception as e:
         logger.error(f"Notification dispatch failed: {e}", exc_info=True)
