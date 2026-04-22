@@ -6,6 +6,7 @@ Credentials are loaded from config/mastodon.json in the workspace.
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -14,7 +15,13 @@ logger = logging.getLogger(__name__)
 
 def load_mastodon_config() -> dict:
     """Load Mastodon credentials from config file."""
-    config_path = Path("/home/urtzai/.openclaw/workspace/config/mastodon.json")
+    # Resolve workspace path: env var > relative to skill dir
+    ws = os.environ.get("OPENCLAW_WORKSPACE_DIR", "")
+    if not ws:
+        # Skill is at ~/.openclaw/skills/astronomical-events/
+        skill_dir = Path(__file__).resolve().parent.parent
+        ws = str(skill_dir.parent.parent / "workspace")
+    config_path = Path(ws) / "config" / "mastodon.json"
     
     if not config_path.exists():
         logger.warning("Mastodon config not found at %s", config_path)
