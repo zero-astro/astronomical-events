@@ -135,7 +135,27 @@ EVENT_TYPE_EMOJI = {
     "moon_conjunction": "🌙",
     "opposition": "🔴",
     "perihelion": "☀️",
+    "galaxy": "🌀",
 }
+
+# Planet name translations
+PLANET_TRANSLATIONS = {
+    "Mercury": "Merkurio",
+    "Venus": "Artizarra",
+    "Mars": "Marte",
+    "Jupiter": "Jupiter",
+    "Saturn": "Saturno",
+    "Uranus": "Urano",
+    "Neptune": "Neptuno",
+}
+
+
+def _translate_planets(title: str) -> str:
+    """Replace English planet names with Basque in a string."""
+    for eng, basq in PLANET_TRANSLATIONS.items():
+        title = title.replace(eng, basq)
+    return title
+
 
 # Basque time labels
 def _translate_time_label(time_label: str) -> str:
@@ -223,28 +243,33 @@ def _translate_title(title: str) -> str:
     m = re.search(r'(?:Comet\s+)?(C/\d{4}\s+\w+\s*\([^)]*\))\s+passes\s+perihelion', cleaned, re.IGNORECASE)
     if m:
         comet_name = m.group(1).strip()
-        return f"{comet_name} kometak perihelioa igaro du"
+        return _translate_planets(f"{comet_name} kometak perihelioa igaro du")
     
     # Match: "Comet XXX passes perihelion" (no parentheses)
     m = re.search(r'(?:Comet\s+)?([^\s]+)\s+passes\s+perihelion', cleaned, re.IGNORECASE)
     if m:
         comet_name = m.group(1).strip()
-        return f"{comet_name} kometak perihelioa igaro du"
+        return _translate_planets(f"{comet_name} kometak perihelioa igaro du")
     
     # Match: "XXX at opposition"
     m = re.search(r'(.+)\s+at\s+opposition', title, re.IGNORECASE)
     if m:
         obj = m.group(1).strip()
-        return f"{obj} oposizioan dago"
+        return _translate_planets(f"{obj} oposizioan dago")
     
     # Match: "XXX is well placed"
     m = re.search(r'(.+)\s+is\s+well\s+placed', title, re.IGNORECASE)
     if m:
         obj = m.group(1).strip()
-        return f"{obj} ondo kokatuta dago"
+        return _translate_planets(f"{obj} ondo kokatuta dago")
     
     # If no translation found, clean up the title (remove date prefix)
-    return cleaned
+    result = cleaned
+    
+    # Translate any remaining English planet names to Basque
+    result = _translate_planets(result)
+    
+    return result
 
 
 def format_mastodon_status(event_data: dict) -> str:
@@ -321,7 +346,7 @@ def format_mastodon_digest(events: list[dict]) -> str:
         event_status = format_mastodon_status(evt)
         # Extract just the title line from the formatted status
         for line in event_status.split("\n"):
-            if line.startswith("🌟") or line.startswith("☄️") or line.startswith("🌠") or line.startswith("🔴") or line.startswith("🌙") or line.startswith("🪐"):
+            if any(line.startswith(e) for e in ["🌟", "☄️", "🌠", "🔴", "🌙", "🪐", "☀️", "🌀"]):
                 lines.append(line)
     
     if len(events) > 8:
