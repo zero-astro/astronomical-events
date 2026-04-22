@@ -18,6 +18,12 @@ from typing import Optional
 
 from db_manager import DatabaseManager, Event
 from classifier import get_priority_emoji, format_visibility_label
+from mastodon_client import (
+    load_mastodon_config,
+    post_to_mastodon,
+    format_mastodon_status,
+    format_mastodon_digest
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +127,7 @@ def send_notifications(config: dict) -> dict:
     """Main notification dispatch function.
 
     Processes unnotified events and outputs structured notifications.
+    Also posts to Mastodon if configured.
     Returns a summary dict with stats.
 
     Args:
@@ -130,6 +137,10 @@ def send_notifications(config: dict) -> dict:
         Dict with stats: {sent_immediate, sent_batch, sent_digest, failed}
     """
     db = DatabaseManager(config["db_path"])
+    
+    # Check if Mastodon is configured
+    mastodon_config = load_mastodon_config()
+    mastodon_enabled = bool(mastodon_config)
 
     try:
         # Get unnotified events (P1-P3)
@@ -155,10 +166,15 @@ def send_notifications(config: dict) -> dict:
             formatted = [_format_event_for_output(e) for e in immediate_events]
             notifications.append(_format_notification_message(formatted, "P1-P2 High Priority"))
 
-            # Mark as notified
+            # Mark as notified and post to Mastodon
             for event in immediate_events:
                 db.mark_as_notified(event.news_id)
                 stats["sent_immediate"] += 1
+                
+                # Post to Mastodon if enabled
+                if mastodon_enabled:
+                    status = format_mastodon_status(_format_event_for_output(event))
+                    post_to_mastodon(status, mastodon_config)
 
         # P3: Batched (up to 5 per batch)
         if p3_events:
@@ -171,6 +187,11 @@ def send_notifications(config: dict) -> dict:
                 for event in batch:
                     db.mark_as_notified(event.news_id)
                     stats["sent_batch"] += 1
+                    
+                    # Post to Mastodon if enabled
+                    if mastodon_enabled:
+                        status = format_mastodon_status(_format_event_for_output(event))
+                        post_to_mastodon(status, mastodon_config)
 
         # P4/P5: Daily digest (all upcoming events)
         window_days = int(config.get("window_days", "15"))
@@ -180,6 +201,11 @@ def send_notifications(config: dict) -> dict:
             formatted = [_format_event_for_output(e) for e in all_upcoming]
             notifications.append(_format_notification_message(formatted, "Daily Digest (P4-P5)"))
             stats["sent_digest"] = len(all_upcoming)
+            
+            # Post digest summary to Mastodon if enabled
+            if mastodon_enabled and len(all_upcoming) > 0:
+                digest_status = format_mastodon_digest(formatted)
+                post_to_mastodon(digest_status, mastodon_config)
 
     except Exception as e:
         logger.error(f"Notification dispatch failed: {e}", exc_info=True)

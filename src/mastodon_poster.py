@@ -1,7 +1,7 @@
 """Mastodon poster for astronomical events happening tonight.
 
 Posts a formatted message about the next astronomical event to Mastodon,
-including visibility info and in-the-sky.org link.
+including visibility info and in-the-sky.org link. All text is in Basque.
 """
 
 import os
@@ -19,8 +19,8 @@ except ImportError:
 class EventPost:
     """Represents a formatted event post for Mastodon."""
     title: str  # "Gaurko gertaera astronomikoa"
-    subtitle: str  # Event name
-    description: str  # Short description (< 150 chars)
+    subtitle: str  # Event name (translated)
+    description: str  # Short description (< 150 chars, translated)
     visibility_emoji: str  # 👁️ or 🔭 or 🌙
     url: str  # in-the-sky.org URL
 
@@ -42,6 +42,113 @@ VISIBILITY_EMOJIS = {
     "close_approach": "🔭",  # Close approaches need telescope
     "comet": "🔭",  # Comets usually need telescope
 }
+
+# Complete Basque translations for event titles (key = English pattern, value = Basque)
+TITLE_TRANSLATIONS = {
+    # Meteor showers - complete replacements
+    "Lyrid meteor shower 2026": "Lyrid meteor txarrua 2026",
+    "Lyrid meteor shower": "Lyrid meteor txarrua",
+    "Perseid meteor shower": "Perseo meteor txarrua",
+    "Geminid meteor shower": "Geminoide meteor txarrua",
+    "Quadrantid meteor shower": "Kuadrantide meteor txarrua",
+
+    # Eclipses - complete replacements
+    "Solar eclipse": "Eguzki eklipsea",
+    "Lunar eclipse": "Ilargi eklipsea",
+    "Total solar eclipse": "Eguzki eklipse osoa",
+    "Partial lunar eclipse": "Ilargi eklipse partziala",
+
+    # Occultations - complete replacements
+    "Lunar occultation of Beta Tauri": "Beta Tauriren ilargi eklipsea",
+    "Lunar occultation": "Ilargi eklipsea",
+    "Stellar occultation by asteroid 704 Tama": "704 Tama asteroidearen izar eklipsea",
+    "Asteroid occultation": "Asteroide eklipsea",
+
+    # Conjunctions and approaches - complete replacements
+    "Close approach of the Moon and Jupiter": "Ilargia eta Jupiterren hurbilketa",
+    "Conjunction of the Moon and Jupiter": "Ilargia eta Jupiterren konjuntzioa",
+    "Moon and Jupiter share the same right ascension": "Ilargia eta Jupiterrek ascendente zuzen bera partekatzen dute",
+
+    # Comets - complete replacements
+    "Comet 141P/Machholz passes perihelion": "141P/Machholz kometak perihelioa gainditzen du",
+    "Comet 141P/Machholz makes its closest approach to the Sun": "141P/Machholz kometaren Eguzkiko hurbilketa handiena",
+
+    # General patterns (will be used for partial matching)
+}
+
+
+def translate_title(title: str) -> str:
+    """Translate event title to Basque.
+
+    Uses exact matches first, then pattern-based replacements.
+    Falls back to original if no translation found.
+    """
+    # Check exact matches first
+    for eng, basq in TITLE_TRANSLATIONS.items():
+        if eng.lower() == title.lower():
+            return basq
+
+    # Pattern-based translations (longest match wins)
+    patterns = [
+        ("meteor shower", "meteor txarrua"),
+        ("lunar occultation of", "ilargi eklipsea"),
+        ("stellar occultation by asteroid", "izar eklipsea asteroideak"),
+        ("asteroid occultation", "asteroide eklipsea"),
+        ("close approach of the moon and", "ilargia eta ... hurbilketa"),
+        ("conjunction of the moon and", "ilargia eta ... konjuntzioa"),
+        ("passes perihelion", "perihelioa gainditzen du"),
+        ("closest approach to the sun", "Eguzkiko hurbilketa handiena"),
+    ]
+
+    result = title
+    for eng, basq in patterns:
+        if eng.lower() in title.lower():
+            # Replace the English pattern with Basque equivalent
+            idx = title.lower().index(eng)
+            before = title[:idx]
+            after = title[idx + len(eng):]
+
+            if "meteor shower" in eng:
+                result = f"{before.strip()} {basq}"
+            elif "occultation" in eng:
+                result = f"{after.strip()}"  # Keep the rest (star/asteroid name)
+            else:
+                result = f"{before.strip()} {basq}{after.strip()}"
+
+    return result
+
+
+def translate_description(desc: str, event_type: str) -> str:
+    """Translate description to Basque.
+
+    Translates complete phrases and patterns in the description.
+    Falls back to original if no translation found.
+    """
+    # Complete phrase translations (order matters - longer first)
+    phrase_translations = [
+        ("reaches its peak", "goragunean da"),
+        ("will pass in front of", "aurkitik pasatuko du"),
+        ("passes in front of", "aurkitik pasatzen du"),
+        ("makes its closest approach to the Sun", "Eguzkiko hurbilketa handiena egiten du"),
+        ("closest approach to the Sun", "hurbilketa handiena Eguzkira"),
+        ("share the same right ascension", "ascendente zuzen bera partekatzen dute"),
+        ("pass close to each other", "elkarrengana hurbiltzen dira"),
+        ("creating a lunar occultation", "ilargi eklipsea sortuz"),
+    ]
+
+    result = desc
+    for eng, basq in phrase_translations:
+        if eng.lower() in desc.lower():
+            # Replace the entire English phrase with Basque equivalent
+            idx = desc.lower().index(eng)
+            before = desc[:idx]
+            after = desc[idx + len(eng):]
+
+            # Capitalize first letter of result
+            replacement = basq.capitalize() if before.strip() else basq
+            result = f"{before.strip()} {replacement}{after.strip()}"
+
+    return result
 
 
 def get_visibility_emoji(event_type: str, priority: int) -> str:
@@ -109,18 +216,22 @@ def create_event_post(event, db_path: str = None) -> EventPost:
         Formatted EventPost ready for Mastodon
     """
     # Use stored description or fetch from DB
-    description = event.description or ""
+    raw_description = event.description or ""
+
+    # Translate title and description to Basque
+    translated_title = translate_title(event.title)
+    translated_desc = translate_description(raw_description, event.event_type)
 
     # Truncate to 150 chars max
-    description = truncate_description(description, 150)
+    translated_desc = truncate_description(translated_desc, 150)
 
     # Get visibility emoji
     visibility_emoji = get_visibility_emoji(event.event_type, event.priority)
 
     return EventPost(
         title="Gaurko gertaera astronomikoa",
-        subtitle=event.title,
-        description=description,
+        subtitle=translated_title,
+        description=translated_desc,
         visibility_emoji=visibility_emoji,
         url=event.event_page_url or "",
     )
