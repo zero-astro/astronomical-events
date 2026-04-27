@@ -82,10 +82,15 @@ def translate_title(title: str) -> str:
 
     Uses exact matches first, then pattern-based replacements.
     Falls back to original if no translation found.
+    Strips date prefixes for cleaner output.
     """
-    # Check exact matches first
+    # Strip date prefix (e.g., "23 Apr 2026 (2 days away): ")
+    import re
+    clean_title = re.sub(r'^\d{1,2}\s+\w{3}\s+\d{4}\s*\([^)]*\)?:?\s*', '', title)
+
+    # Check exact matches first (on cleaned title)
     for eng, basq in TITLE_TRANSLATIONS.items():
-        if eng.lower() == title.lower():
+        if eng.lower() == clean_title.lower():
             return basq
 
     # Pattern-based translations (longest match wins)
@@ -100,13 +105,13 @@ def translate_title(title: str) -> str:
         ("closest approach to the sun", "Eguzkiko hurbilketa handiena"),
     ]
 
-    result = title
+    result = clean_title
     for eng, basq in patterns:
-        if eng.lower() in title.lower():
+        if eng.lower() in result.lower():
             # Replace the English pattern with Basque equivalent
-            idx = title.lower().index(eng)
-            before = title[:idx]
-            after = title[idx + len(eng):]
+            idx = result.lower().index(eng)
+            before = result[:idx]
+            after = result[idx + len(eng):]
 
             if "meteor shower" in eng:
                 result = f"{before.strip()} {basq}"
@@ -182,7 +187,7 @@ def get_tonight_events(db_path: str, hours_ahead: int = 8) -> list:
     Returns:
         List of Event objects sorted by event_date
     """
-    from src.db_manager import DatabaseManager
+    from db_manager import DatabaseManager
 
     db = DatabaseManager(db_path)
     now = datetime.now()
@@ -258,7 +263,7 @@ def post_to_mastodon(status: str) -> bool:
         mastodon = Mastodon(
             client_id=None,  # Using access token only
             api_base_url=MASTODON_INSTANCE,
-            token=MASTODON_ACCESS_TOKEN,
+            access_token=MASTODON_ACCESS_TOKEN,
         )
         mastodon.status_post(status)
         print(f"✅ Posted to Mastodon: {status[:50]}...")
@@ -266,6 +271,60 @@ def post_to_mastodon(status: str) -> bool:
     except Exception as e:
         print(f"❌ Failed to post to Mastodon: {e}")
         return False
+
+
+def create_digest_post(db_path: str, days_ahead: int = 14) -> Optional[str]:
+    """Create a condensed digest of upcoming astronomical events for Mastodon.
+
+    Args:
+        db_path: Path to SQLite database
+        days_ahead: Number of days to look ahead (default 14)
+
+    Returns:
+        Formatted status string (max 500 chars) or None if no events
+    """
+    from db_manager import DatabaseManager
+
+    db = DatabaseManager(db_path)
+    try:
+        all_events = db.get_upcoming_events(days=days_ahead)
+    finally:
+        db.close()
+
+    # Include ALL upcoming events in the daily digest (not just P1-P3)
+    priority_events = list(all_events)  # copy, no filtering
+
+    if not priority_events:
+        return "🔭 Astronomia Digest\nEz dago gertaerarik hurrengo egunetan.\n📋 0 gertaera | 👁️=Begi hutsez | 🔭=Teleskopioa"
+
+    # Sort by date
+    priority_events.sort(key=lambda e: e.event_date)
+
+    # Build condensed lines (max ~45 chars each to fit Mastodon)
+    L1, L2, L3 = "🔴", "🟠", "🟡"
+    lines = ["🔭 Astronomia Digest"]
+
+    for event in priority_events:
+        # Translate title to Basque
+        basq_title = translate_title(event.title)
+        emoji = get_visibility_emoji(event.event_type, event.priority)
+
+        # Condense: P + short title (max 30 chars) + emoji
+        line = f"{L1 if event.priority == 1 else L2 if event.priority == 2 else L3} {basq_title[:30]} {emoji}"
+        lines.append(line)
+
+    # Add footer
+    lines.append(f"📋 {len(priority_events)} gertaera | 👁️=Begi hutsez | 🔭=Teleskopioa")
+
+    status = "\n".join(lines)
+
+    # Truncate to 500 chars if needed (remove last line if too long)
+    while len(status) > 500 and len(lines) > 2:
+        lines.pop()
+        status = "\n".join(lines)
+        break  # Only one truncation pass
+
+    return status if len(status) <= 500 else None
 
 
 def run_mastodon_post(db_path: str = "data/events.db") -> bool:
@@ -297,9 +356,32 @@ def run_mastodon_post(db_path: str = "data/events.db") -> bool:
     return post_to_mastodon(status)
 
 
+def post_digest_to_mastodon(db_path: str = "data/events.db") -> bool:
+    """Post a condensed digest of upcoming events to Mastodon.
+
+    Args:
+        db_path: Path to SQLite database
+
+    Returns:
+        True if posted, False otherwise
+    """
+    status = create_digest_post(db_path)
+    if not status:
+        print("ℹ️ No priority events for digest")
+        return False
+
+    print(f"📋 Digest ({len(status)} chars):\n{status}")
+    return post_to_mastodon(status)
+
+
 if __name__ == "__main__":
     import sys
 
     db_path = sys.argv[1] if len(sys.argv) > 1 else "data/events.db"
-    success = run_mastodon_post(db_path)
+    mode = sys.argv[2] if len(sys.argv) > 2 else "event"  # "event" or "digest"
+
+    if mode == "digest":
+        success = post_digest_to_mastodon(db_path)
+    else:
+        success = run_mastodon_post(db_path)
     sys.exit(0 if success else 1)

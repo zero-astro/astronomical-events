@@ -43,12 +43,57 @@ class FetchLogEntry:
 class DatabaseManager:
     """SQLite database manager for astronomical events."""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, max_retries: int = 3):
+        """Initialize database connection with WAL mode and retry logic.
+
+        Args:
+            db_path: Path to the SQLite database file
+            max_retries: Maximum number of connection attempts (default 3)
+        """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path))
+        self._max_retries = max_retries
+        self.conn = None
+        self._connect_with_retry()
         self.conn.row_factory = sqlite3.Row
         self._create_tables()
+
+    def _connect_with_retry(self):
+        """Connect to SQLite with retry logic for transient failures."""
+        import time as _time
+        last_exception = None
+
+        for attempt in range(self._max_retries + 1):
+            try:
+                self.conn = sqlite3.connect(
+                    str(self.db_path),
+                    timeout=30.0,  # Wait up to 30s for lock
+                    isolation_level=None,  # Autocommit mode
+                )
+                # Enable WAL mode for better concurrent read/write performance
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                # Enable busy timeout (SQLite will retry on locked DB)
+                self.conn.execute("PRAGMA busy_timeout=5000")
+                # Optimize for write-heavy workloads
+                self.conn.execute("PRAGMA synchronous=NORMAL")
+                logger.info(
+                    f"Database connected at {self.db_path} "
+                    f"(attempt {attempt + 1}/{self._max_retries + 1})"
+                )
+                return
+            except Exception as e:
+                last_exception = e
+                if attempt < self._max_retries:
+                    delay = 0.5 * (2 ** attempt)  # Exponential backoff: 0.5s, 1s, 2s
+                    logger.warning(
+                        f"Database connection failed (attempt {attempt + 1}/{self._max_retries + 1}): {e}. "
+                        f"Retrying in {delay:.1f}s..."
+                    )
+                    _time.sleep(delay)
+                else:
+                    logger.error(f"Database connection failed after {self._max_retries + 1} attempts: {e}")
+
+        raise last_exception  # type: ignore[misc]
 
     def _create_tables(self):
         """Create database tables if they don't exist."""
@@ -96,6 +141,39 @@ class DatabaseManager:
 
         self.conn.commit()
         logger.info("Database tables created/verified")
+
+    def _execute_with_retry(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        """Execute SQL with retry logic for transient database errors.
+
+        Handles SQLiteBusyError and database locked errors by retrying
+        with exponential backoff. This is critical for concurrent access
+        from the scheduler daemon.
+
+        Args:
+            sql: SQL query string
+            params: Query parameters
+
+        Returns:
+            Cursor object
+        """
+        import time as _time
+        last_exception = None
+
+        for attempt in range(self._max_retries + 1):
+            try:
+                return self.conn.execute(sql, params)
+            except sqlite3.OperationalError as e:
+                last_exception = e
+                if "database is locked" in str(e).lower() or "busy" in str(e).lower():
+                    if attempt < self._max_retries:
+                        delay = 0.25 * (1.5 ** attempt)  # Gentle backoff: 0.25s, 0.375s, 0.56s
+                        logger.warning(f"Database locked (attempt {attempt + 1}/{self._max_retries + 1}). Retrying in {delay:.1f}s...")
+                        _time.sleep(delay)
+                    else:
+                        logger.error(f"Database locked after {self._max_retries + 1} attempts: {e}")
+                else:
+                    raise
+        raise last_exception  # type: ignore[misc]
 
     def insert_event(self, news_id: str, title: str, event_date: datetime,
                      rss_pub_date: Optional[str] = None, description: str = "",
@@ -270,6 +348,65 @@ class DatabaseManager:
             status=row["status"],
             error_message=row["error_message"]
         ) for row in cursor.fetchall()]
+
+    def get_events_without_thumbnail(self, limit: int = 10) -> list[Event]:
+        """Get events that don't have a thumbnail URL yet.
+
+        Args:
+            limit: Maximum number of events to return (default 10)
+
+        Returns:
+            List of Event objects without thumbnails
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM events
+            WHERE thumbnail_url IS NULL OR thumbnail_url = ''
+            ORDER BY event_date ASC
+            LIMIT ?
+        """, (limit,))
+        return [self._row_to_event(row) for row in cursor.fetchall()]
+
+    def update_thumbnail(self, news_id: str, thumbnail_url: str) -> bool:
+        """Update the thumbnail URL for an event.
+
+        Args:
+            news_id: Event identifier
+            thumbnail_url: New thumbnail URL
+
+        Returns:
+            True if updated successfully
+        """
+        try:
+            self._execute_with_retry(
+                "UPDATE events SET thumbnail_url = ?, updated_at = CURRENT_TIMESTAMP WHERE news_id = ?",
+                (thumbnail_url, news_id)
+            )
+            logger.info(f"Updated thumbnail for event {news_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update thumbnail for {news_id}: {e}")
+            return False
+
+    def get_event_by_title(self, title: str) -> Optional[Event]:
+        """Get an event by its title (fuzzy match).
+
+        Args:
+            title: Event title to search for
+
+        Returns:
+            Event object or None if not found
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM events WHERE title LIKE ? LIMIT 1
+        """, (f"%{title[:50]}%",))
+        row = cursor.fetchone()
+        return self._row_to_event(row) if row else None
+
+    def get_event_count(self) -> int:
+        """Alias for count_events() — used by health_check."""
+        return self.count_events()
 
     def get_event_by_id(self, news_id: str) -> Optional[Event]:
         """Get a single event by its ID.

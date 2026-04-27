@@ -127,9 +127,9 @@ def run_fetch_pipeline(config: dict) -> dict:
     try:
         # Fetch RSS feed
         logger.info("Fetching RSS feed...")
-        raw_items = fetch_rss(config["rss_url"], config["latitude"], config["longitude"])
-        stats["fetched"] = len(raw_items)
-        logger.info(f"Fetched {len(raw_items)} items from RSS")
+        raw_items = fetch_rss(config["rss_url"])
+        stats["fetched"] = len(raw_items) if raw_items else 0
+        logger.info(f"Fetched {stats['fetched']} items from RSS")
 
         # Parse and store new items
         for item in raw_items:
@@ -137,7 +137,7 @@ def run_fetch_pipeline(config: dict) -> dict:
             if not title or "error" in title.lower():
                 continue
 
-            existing = db.get_event_by_title(title)
+            existing = db.get_event_by_id(item.get("guid", ""))
             if existing:
                 continue  # Already stored
 
@@ -164,15 +164,14 @@ def run_fetch_pipeline(config: dict) -> dict:
             # Classify the event
             classification = classify_event(title, item.get("description", ""))
 
-            db.add_event(
+            db.insert_event(
                 news_id=item.get("guid", ""),
                 title=title,
+                event_date=event_date if event_date else datetime.now(),
+                rss_pub_date=item.get("pubDate"),
                 description=item.get("description", "")[:500],
-                link=item.get("link", ""),
-                pub_date=item.get("pubDate"),
-                event_date=event_date,
-                priority=classification["priority"],
                 event_type=classification["event_type"],
+                priority=classification["priority"],
                 visibility_level=classification.get("visibility_level"),
             )
 
@@ -183,9 +182,9 @@ def run_fetch_pipeline(config: dict) -> dict:
             try:
                 page_html = fetch_event_page(event.event_page_url or "")
                 if page_html:
-                    thumb_url = parse_page(page_html, event.title)
-                    if thumb_url:
-                        db.update_thumbnail(event.news_id, thumb_url)
+                    page_data = parse_page(page_html)
+                    if page_data and page_data.thumbnail_url:
+                        db.update_thumbnail(event.news_id, page_data.thumbnail_url)
                         scraped += 1
             except Exception as e:
                 logger.warning(f"Thumbnail scrape failed for {event.title}: {e}")
@@ -241,28 +240,45 @@ class Scheduler:
         return now.date() > last
 
     def _run_cycle(self):
-        """Execute one full cycle: fetch + notify."""
+        """Execute one full cycle: fetch + notify.
+
+        Each sub-job is wrapped in try/except so a failure in one
+        doesn't prevent the other from running. This ensures that
+        even if RSS fetching fails, notifications for previously
+        cached events can still be sent.
+        """
         logger.info("=" * 60)
         logger.info(f"Scheduler cycle started at {datetime.now().isoformat()}")
         logger.info("-" * 40)
 
-        # Fetch job
+        # Fetch job (isolated error handling)
+        fetch_stats = {"fetched": 0, "new": 0, "errors": 0}
         if self._should_fetch():
-            logger.info("Running fetch pipeline...")
-            fetch_stats = run_fetch_pipeline(self.config)
-            logger.info(
-                f"Fetch complete: {fetch_stats['fetched']} fetched, "
-                f"{fetch_stats['new']} new events"
-            )
-            self._last_fetch = datetime.now()
+            try:
+                logger.info("Running fetch pipeline...")
+                fetch_stats = run_fetch_pipeline(self.config)
+                logger.info(
+                    f"Fetch complete: {fetch_stats['fetched']} fetched, "
+                    f"{fetch_stats['new']} new events"
+                )
+            except Exception as e:
+                logger.error(f"Fetch pipeline failed: {e}", exc_info=True)
+                fetch_stats["errors"] = 1
+            finally:
+                self._last_fetch = datetime.now()
+        else:
+            logger.debug("Skipping fetch (interval not elapsed)")
 
-        # Notify job (check for unnotified events after fetch)
-        notify_stats = run_notify(self.config)
-        logger.info(
-            f"Notifications: {notify_stats['sent_immediate']} immediate, "
-            f"{notify_stats['sent_batch']} batched, "
-            f"{notify_stats['sent_digest']} digest"
-        )
+        # Notify job (always runs, even if fetch failed)
+        try:
+            notify_stats = run_notify(self.config)
+            logger.info(
+                f"Notifications: {notify_stats['sent_immediate']} immediate, "
+                f"{notify_stats['sent_batch']} batched, "
+                f"{notify_stats['sent_digest']} digest"
+            )
+        except Exception as e:
+            logger.error(f"Notification dispatch failed: {e}", exc_info=True)
 
         # Digest job (daily at 08:00)
         if self._should_digest():
@@ -282,12 +298,14 @@ class Scheduler:
         self._run_cycle()
 
     def run_daemon(self):
-        """Run as a persistent daemon with signal handling."""
+        """Run as a persistent daemon with signal handling and health degradation tracking."""
         self._running = True
+        self._consecutive_errors = 0
+        self._max_consecutive_errors = 10  # Graceful shutdown after this many errors
+
         logger.info(f"Scheduler daemon started (fetch interval: {self.config['fetch_interval_minutes']}min)")
         logger.info("Press Ctrl+C to stop.")
 
-        # Graceful shutdown on SIGTERM/SIGINT
         def handle_signal(signum, frame):
             logger.info(f"Received signal {signum}, shutting down...")
             self._running = False
@@ -298,12 +316,24 @@ class Scheduler:
         while self._running:
             try:
                 self._run_cycle()
+                # Reset error counter on success
+                self._consecutive_errors = 0
+
                 # Sleep until next fetch cycle (check every 30s for graceful shutdown)
                 sleep_seconds = min(30, self.config["fetch_interval_minutes"] * 60)
                 time.sleep(sleep_seconds)
             except Exception as e:
-                logger.error(f"Scheduler error: {e}", exc_info=True)
-                time.sleep(60)  # Wait before retrying
+                self._consecutive_errors += 1
+                logger.error(f"Scheduler daemon error (#{self._consecutive_errors}): {e}", exc_info=True)
+
+                if self._consecutive_errors >= self._max_consecutive_errors:
+                    logger.critical(
+                        f"Max consecutive errors ({self._max_consecutive_errors}) reached. "
+                        "Shutting down daemon to prevent resource exhaustion."
+                    )
+                    self._running = False
+                else:
+                    time.sleep(120)  # Wait before retrying
 
         logger.info("Scheduler daemon stopped.")
 
@@ -339,10 +369,10 @@ def health_check(config: dict) -> dict:
 
     # Check RSS feed reachability (lightweight)
     try:
-        raw_items = fetch_rss(config["rss_url"], config["latitude"], config["longitude"])
+        raw_items = fetch_rss(config["rss_url"])
         result["checks"]["rss_feed"] = {
             "status": "ok",
-            "items_available": len(raw_items),
+            "items_available": len(raw_items) if raw_items else 0,
         }
     except Exception as e:
         result["checks"]["rss_feed"] = {"status": "error", "message": str(e)}

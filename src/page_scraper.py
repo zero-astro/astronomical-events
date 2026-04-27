@@ -1,6 +1,7 @@
 """Page scraper - extract thumbnail and visibility level from event pages.
 
-Integrates with the cache layer to reduce redundant HTTP requests.
+Enhanced with rate limiting, circuit breaker, and retry logic for resilient
+HTTP operations against in-the-sky.org (Phase 4).
 Caches event page HTML content for configurable TTL periods.
 """
 
@@ -28,6 +29,34 @@ LEVEL_ICON_PATTERN = re.compile(r"level(\d+)_icon\.png", re.IGNORECASE)
 # Cache configuration for page content (1 hour TTL by default)
 PAGE_CACHE_TTL = 3600
 
+# Rate limiter: max 2 requests/sec to avoid hammering in-the-sky.org
+_page_rate_limiter = None
+
+
+def _get_rate_limiter():
+    """Lazy initialization of rate limiter."""
+    global _page_rate_limiter
+    if _page_rate_limiter is None:
+        from retry import RateLimiter
+        _page_rate_limiter = RateLimiter(max_tokens=3, refill_rate=2.0)  # burst 3, 2/sec sustained
+    return _page_rate_limiter
+
+
+# Circuit breaker for page scraping (separate from RSS)
+_page_circuit_breaker = None
+
+
+def _get_circuit_breaker():
+    """Lazy initialization of circuit breaker."""
+    global _page_circuit_breaker
+    if _page_circuit_breaker is None:
+        from retry import CircuitBreaker
+        _page_circuit_breaker = CircuitBreaker(
+            failure_threshold=5,
+            recovery_timeout=60.0,  # 1 min cooldown
+        )
+    return _page_circuit_breaker
+
 
 @dataclass
 class PageData:
@@ -42,7 +71,7 @@ class PageData:
 
 
 def fetch_event_page(url: str, timeout: int = 15, use_cache: bool = True) -> str | None:
-    """Fetch the HTML content of an event page with optional caching.
+    """Fetch the HTML content of an event page with caching, rate limiting, and retry.
 
     Args:
         url: Full URL to the event page on in-the-sky.org
@@ -52,6 +81,12 @@ def fetch_event_page(url: str, timeout: int = 15, use_cache: bool = True) -> str
     Returns:
         Raw HTML string or None on failure
     """
+    # Check circuit breaker
+    cb = _get_circuit_breaker()
+    if cb.state == "open":
+        logger.warning("Circuit breaker OPEN for page fetch - using cache only")
+        use_cache = True
+
     # Try cache first
     if use_cache:
         from cache import get_cache
@@ -61,7 +96,7 @@ def fetch_event_page(url: str, timeout: int = 15, use_cache: bool = True) -> str
             logger.debug(f"Cache hit for page: {url}")
             return cached
 
-    # Fetch from network
+    # Fetch from network with rate limiting and retry
     html = _fetch_page(url, timeout)
 
     # Cache the result
@@ -75,11 +110,24 @@ def fetch_event_page(url: str, timeout: int = 15, use_cache: bool = True) -> str
 
 
 def _fetch_page(url: str, timeout: int) -> str | None:
-    """Fetch HTML from network without caching."""
-    try:
-        import urllib.request
-        import urllib.error
+    """Fetch HTML from network with rate limiting and retry logic."""
+    import urllib.request
+    import urllib.error
 
+    # Acquire rate limiter token
+    rl = _get_rate_limiter()
+    rl.acquire()
+
+    cb = _get_circuit_breaker()
+
+    @with_retry(
+        max_retries=2,  # Lighter retry for page scraping (less critical)
+        base_delay=1.5,
+        max_delay=30.0,
+        backoff_factor=2.0,
+        retryable_exceptions=(urllib.error.URLError, urllib.error.HTTPError, OSError),
+    )
+    def _do_fetch():
         req = urllib.request.Request(url, headers={
             "User-Agent": "AstronomicalEvents/0.1 (bot)",
             "Accept": "text/html",
@@ -87,12 +135,16 @@ def _fetch_page(url: str, timeout: int) -> str | None:
 
         with urllib.request.urlopen(req, timeout=timeout) as response:
             if response.status == 200:
+                cb.record_success()
                 return response.read().decode("utf-8", errors="replace")
             else:
                 logger.warning(f"HTTP {response.status} for {url}")
-                return None
+                raise urllib.error.HTTPError(url, response.status, f"HTTP {response.status}", {}, None)
 
+    try:
+        return _do_fetch()
     except Exception as e:
+        cb.record_failure()
         logger.error(f"Failed to fetch page {url}: {e}")
         return None
 
@@ -110,16 +162,20 @@ def parse_page(html: str) -> PageData | None:
         logger.warning("beautifulsoup4 required for page scraping")
         return None
 
-    soup = BeautifulSoup(html, "lxml" if _has_lxml() else "html.parser")
-    data = PageData()
+    try:
+        soup = BeautifulSoup(html, "lxml" if _has_lxml() else "html.parser")
+        data = PageData()
 
-    # Extract thumbnail from teaser image
-    data.thumbnail_url = _extract_thumbnail(soup)
+        # Extract thumbnail from teaser image
+        data.thumbnail_url = _extract_thumbnail(soup)
 
-    # Extract visibility level from icon
-    data.visibility_level, data.visibility_text = _extract_visibility(soup)
+        # Extract visibility level from icon
+        data.visibility_level, data.visibility_text = _extract_visibility(soup)
 
-    return data
+        return data
+    except Exception as e:
+        logger.error(f"Failed to parse page HTML: {e}")
+        return None
 
 
 def _has_lxml() -> bool:
@@ -136,25 +192,29 @@ def _extract_thumbnail(soup) -> str | None:
 
     Looks for images with style=hugeteaser or in the teaser section.
     """
-    # Try to find the large teaser image
-    teaser = soup.find("img", src=re.compile(r"style=.*?teaser"))
-    if teaser and teaser.get("src"):
-        return _resolve_url(teaser["src"])
+    try:
+        # Try to find the large teaser image
+        teaser = soup.find("img", src=re.compile(r"style=.*?teaser"))
+        if teaser and teaser.get("src"):
+            return _resolve_url(teaser["src"])
 
-    # Fallback: look for any image in the main content area
-    content = soup.find("div", class_=re.compile(r"news|content|article", re.I))
-    if content:
-        img = content.find("img")
-        if img and img.get("src"):
-            return _resolve_url(img["src"])
+        # Fallback: look for any image in the main content area
+        content = soup.find("div", class_=re.compile(r"news|content|article", re.I))
+        if content:
+            img = content.find("img")
+            if img and img.get("src"):
+                return _resolve_url(img["src"])
 
-    # Last resort: first image on page that's not a level icon
-    for img in soup.find_all("img"):
-        src = img.get("src", "")
-        if "level" not in src.lower() and "icon" not in src.lower():
-            return _resolve_url(src)
+        # Last resort: first image on page that's not a level icon
+        for img in soup.find_all("img"):
+            src = img.get("src", "")
+            if "level" not in src.lower() and "icon" not in src.lower():
+                return _resolve_url(src)
 
-    return None
+        return None
+    except Exception as e:
+        logger.error(f"Failed to extract thumbnail: {e}")
+        return None
 
 
 def _extract_visibility(soup) -> tuple[int | None, str | None]:
@@ -166,27 +226,31 @@ def _extract_visibility(soup) -> tuple[int | None, str | None]:
     Returns:
         Tuple of (visibility_level_int, alt_text)
     """
-    # Find all images and look for level icons
-    for img in soup.find_all("img"):
-        src = img.get("src", "")
-        match = LEVEL_ICON_PATTERN.search(src)
-        if match:
-            level = int(match.group(1))
-            # Clamp to valid range 1-5 (in-the-sky.org may return higher values)
-            if level < 1:
-                level = 1
-            elif level > 5:
-                level = 5
-            alt_text = img.get("alt", "").strip() or None
-            return level, alt_text
+    try:
+        # Find all images and look for level icons
+        for img in soup.find_all("img"):
+            src = img.get("src", "")
+            match = LEVEL_ICON_PATTERN.search(src)
+            if match:
+                level = int(match.group(1))
+                # Clamp to valid range 1-5 (in-the-sky.org may return higher values)
+                if level < 1:
+                    level = 1
+                elif level > 5:
+                    level = 5
+                alt_text = img.get("alt", "").strip() or None
+                return level, alt_text
 
-    # Fallback: look for text mentioning visibility level
-    body_text = soup.get_text().lower()
-    for lvl in range(5, 0, -1):
-        if f"level {lvl}" in body_text:
-            return lvl, None
+        # Fallback: look for text mentioning visibility level
+        body_text = soup.get_text().lower()
+        for lvl in range(5, 0, -1):
+            if f"level {lvl}" in body_text:
+                return lvl, None
 
-    return None, None
+        return None, None
+    except Exception as e:
+        logger.error(f"Failed to extract visibility level: {e}")
+        return None, None
 
 
 def _resolve_url(url: str) -> str:

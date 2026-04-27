@@ -5,7 +5,7 @@ through any channel (Telegram, WhatsApp, etc.) via heartbeat/cron triggers.
 
 Usage:
     python3 scripts/main.py notify-now   # Outputs JSON to stdout
-    
+
 Output format is deterministic and machine-readable so the skill works
 consistently regardless of which messaging channel delivers it.
 """
@@ -104,7 +104,7 @@ def _build_human_readable(notifications: list[dict]) -> str:
     """Build a human-readable message from structured notification data.
 
     This ensures consistent formatting regardless of channel.
-    Uses plain text with clear structure — no markdown tables (WhatsApp/Discord).
+    Uses plain text with clear structure - no markdown tables (WhatsApp/Discord).
     """
     lines = []
 
@@ -142,11 +142,11 @@ def send_notifications(config: dict) -> dict:
         Dict with stats: {sent_immediate, sent_batch, sent_digest, failed}
     """
     db = DatabaseManager(config["db_path"])
-    
+
     # Check if Mastodon is configured
     mastodon_config = load_mastodon_config()
     mastodon_enabled = bool(mastodon_config)
-    
+
     # Check if Telegram is configured
     telegram_config = load_telegram_config()
     telegram_enabled = bool(telegram_config)
@@ -157,9 +157,7 @@ def send_notifications(config: dict) -> dict:
 
         if not all_unnotified:
             logger.info("No new high-priority events to notify.")
-            return {"sent_immediate": 0, "sent_batch": 0, "sent_digest": 0, "failed": 0}
-
-        logger.info(f"Found {len(all_unnotified)} unnotified events (P1-P3)")
+            # Still proceed to send daily digest below
 
         # Separate by priority tier
         p1_events = [e for e in all_unnotified if e.priority == 1]
@@ -179,15 +177,23 @@ def send_notifications(config: dict) -> dict:
             for event in immediate_events:
                 db.mark_as_notified(event.news_id)
                 stats["sent_immediate"] += 1
-                
-                # Post to Mastodon if enabled
+
+                # Post to Mastodon if enabled (isolated error handling)
                 if mastodon_enabled:
-                    status = format_mastodon_status(_format_event_for_output(event))
-                    post_to_mastodon(status, mastodon_config)
+                    try:
+                        status = format_mastodon_status(_format_event_for_output(event))
+                        post_to_mastodon(status, mastodon_config)
+                    except Exception as e:
+                        logger.error(f"Mastodon post failed for {event.news_id}: {e}")
+                        stats["failed"] += 1
                 
-                # Send Telegram notification if enabled
+                # Send Telegram notification if enabled (isolated error handling)
                 if telegram_enabled:
-                    send_telegram_notification(telegram_config, _format_event_for_output(event))
+                    try:
+                        send_telegram_notification(telegram_config, _format_event_for_output(event))
+                    except Exception as e:
+                        logger.error(f"Telegram notification failed for {event.news_id}: {e}")
+                        stats["failed"] += 1
 
         # P3: Batched (up to 5 per batch)
         if p3_events:
@@ -200,15 +206,23 @@ def send_notifications(config: dict) -> dict:
                 for event in batch:
                     db.mark_as_notified(event.news_id)
                     stats["sent_batch"] += 1
-                    
-                    # Post to Mastodon if enabled
+
+                    # Post to Mastodon if enabled (isolated error handling)
                     if mastodon_enabled:
-                        status = format_mastodon_status(_format_event_for_output(event))
-                        post_to_mastodon(status, mastodon_config)
-                
-                    # Send Telegram notification if enabled
+                        try:
+                            status = format_mastodon_status(_format_event_for_output(event))
+                            post_to_mastodon(status, mastodon_config)
+                        except Exception as e:
+                            logger.error(f"Mastodon post failed for {event.news_id}: {e}")
+                            stats["failed"] += 1
+                    
+                    # Send Telegram notification if enabled (isolated error handling)
                     if telegram_enabled:
-                        send_telegram_notification(telegram_config, _format_event_for_output(event))
+                        try:
+                            send_telegram_notification(telegram_config, _format_event_for_output(event))
+                        except Exception as e:
+                            logger.error(f"Telegram notification failed for {event.news_id}: {e}")
+                            stats["failed"] += 1
 
         # P4/P5: Daily digest (all upcoming events)
         window_days = int(config.get("window_days", "15"))
@@ -218,15 +232,23 @@ def send_notifications(config: dict) -> dict:
             formatted = [_format_event_for_output(e) for e in all_upcoming]
             notifications.append(_format_notification_message(formatted, "Daily Digest (P4-P5)"))
             stats["sent_digest"] = len(all_upcoming)
-            
-            # Post digest summary to Mastodon if enabled
+
+            # Post digest summary to Mastodon if enabled (isolated error handling)
             if mastodon_enabled and len(all_upcoming) > 0:
-                digest_status = format_mastodon_digest(formatted)
-                post_to_mastodon(digest_status, mastodon_config)
+                try:
+                    digest_status = format_mastodon_digest(formatted)
+                    post_to_mastodon(digest_status, mastodon_config)
+                except Exception as e:
+                    logger.error(f"Mastodon digest post failed: {e}")
+                    stats["failed"] += 1
             
-            # Send Telegram digest if enabled
+            # Send Telegram digest if enabled (isolated error handling)
             if telegram_enabled and len(all_upcoming) > 0:
-                send_telegram_digest(telegram_config, formatted)
+                try:
+                    send_telegram_digest(telegram_config, formatted)
+                except Exception as e:
+                    logger.error(f"Telegram digest failed: {e}")
+                    stats["failed"] += 1
 
     except Exception as e:
         logger.error(f"Notification dispatch failed: {e}", exc_info=True)
@@ -246,7 +268,7 @@ def send_notifications(config: dict) -> dict:
         logger.info("NOTIFICATION_OUTPUT_END")
 
     logger.info(
-        f"Notifications complete — Immediate: {stats['sent_immediate']}, "
+        f"Notifications complete - Immediate: {stats['sent_immediate']}, "
         f"Batch: {stats['sent_batch']}, Digest: {stats['sent_digest']}, "
         f"Failed: {stats['failed']}"
     )

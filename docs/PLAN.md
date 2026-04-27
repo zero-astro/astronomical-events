@@ -2,14 +2,15 @@
 
 ## 1. Overview
 
-A background service that periodically fetches astronomical event data from **in-the-sky.org** RSS feed, stores it in a SQLite database, classifies events by priority, and sends notifications to the user via Telegram.
+A background service that periodically fetches astronomical event data from **in-the-sky.org** RSS feed, stores it in a SQLite database, classifies events by priority, and outputs structured JSON notifications routed by OpenClaw through any channel (Telegram, WhatsApp, Mastodon, etc.).
 
 ### Key Requirements
 - Fetch RSS: `https://in-the-sky.org/rss.php?feed=dfan&latitude=43.139006&longitude=-2.966625&timezone=Europe/Madrid`
 - Store in SQLite on the server
 - Display events within a **15-day window**
 - Classify by priority (low → high)
-- Notify via Telegram with title, thumbnail, description, and visibility level
+- Output structured JSON notifications (routed by OpenClaw to any channel)
+- Mastodon posting when configured
 
 ---
 
@@ -197,10 +198,13 @@ CREATE INDEX idx_fetch_log_fetched_at ON fetch_log(fetched_at DESC);
                                           │ Engine        │
                                           └───────┬───────┘
                                                   │
-                                          ┌───────▼───────┐
-                                          │ Telegram API  │
-                                          │ (send message)│
-                                          └───────────────┘
+                                    ┌─────────────┼───────────────┐
+                                    ▼             ▼               ▼
+                              ┌──────────┐  ┌──────────┐  ┌──────────┐
+                              │ OpenClaw │  │ Mastodon │  │ Stdout   │
+                              │ stdout   │  │ (if      │  │ JSON     │
+                              │ routing  │  │ config'd)│  │ output   │
+                              └──────────┘  └──────────┘  └──────────┘
 ```
 
 ### Components
@@ -308,25 +312,40 @@ Classification Summary:
 
 ---
 
-### Phase 3: Notification System
-**Goal:** Send Telegram notifications for new and high-priority events.
+### Phase 3: Notification System — COMPLETED ✅
+**Goal:** Send structured notifications for new and high-priority events via OpenClaw routing.
 
-**Tasks:**
-1. [ ] Implement Telegram bot / user client (using API key + chat_id)
-2. [ ] Message formatter:
-   - Title with emoji based on priority tier
-   - Thumbnail image as attachment
-   - Short description
-   - Visibility level icon + text
-   - Link to full event page
-3. [ ] Notification logic:
-   - Immediate notification for P1-P2 events
-   - Batched notification for P3-P4 events
-   - Daily digest (P5 + summary of all upcoming)
-4. [ ] Mark events as `is_notified = true` after sending
-5. [ ] Error handling and retry logic
+**Completion Date:** April 21, 2026
 
-**Deliverable:** Telegram notifications sent for new astronomical events with rich formatting.
+**Tasks Completed:**
+1. [x] **OpenClaw stdout JSON routing** (instead of Telegram bot):
+   - No Telegram bot token required — outputs deterministic JSON to stdout
+   - OpenClaw routes notifications through any channel (Telegram, WhatsApp, etc.)
+   - `telegram_notifier.py` is a stub module (imports satisfied only)
+2. [x] **Message formatter** (`notification.py`):
+   - `_format_event_for_output()` — fixed-schema dict per event
+   - `_format_notification_message()` — batched output with schema version, type, count, events[], generated_at
+   - Priority emoji + tier label (P1-P5)
+   - Time label: "today", "tomorrow", or "{N} days away"
+   - Visibility level + human-readable label
+   - Thumbnail URL and event page URL included when available
+   - Description truncated to 200 chars with `description_truncated` flag
+3. [x] **Notification logic**:
+   - P1/P2 → Immediate individual notifications (one per event)
+   - P3 → Batched, up to 5 events per batch
+   - P4/P5 → Daily digest of all upcoming events in the window
+4. [x] Mark events as `is_notified = true` after dispatch (`db.mark_as_notified(event.news_id)`)
+5. [x] **Mastodon integration** (bonus, not in original plan):
+   - P1-P3 events posted to Mastodon when configured (`mastodon_client.py`, `mastodon_poster.py`)
+   - Daily digest also posted to Mastodon
+6. [x] Basic error handling with try/except and stats tracking
+
+**Key Differences from Plan:**
+- ❌ No Telegram bot/client — replaced by OpenClaw stdout JSON routing (more flexible, multi-channel capable)
+- ✅ Mastodon integration added as bonus channel
+- ⚠️ Retry logic not implemented (basic error handling only)
+
+**Deliverable:** ✅ Structured notifications dispatched via stdout JSON. P1-P2 immediate, P3 batched, P4-P5 daily digest. Mastodon posting when configured.
 
 ---
 
@@ -447,7 +466,8 @@ astronomical-events-notify/
 | RSS Parsing | `feedparser` | Robust, handles edge cases |
 | Database | SQLite (built-in) | Zero-config, file-based, perfect for single-user |
 | HTML Parsing | `beautifulsoup4` + `lxml` | Reliable event page scraping |
-| Telegram | `python-telegram-bot` v20+ | Well-maintained, async support |
+| Notification routing | OpenClaw stdout JSON | Multi-channel (Telegram, WhatsApp, etc.) |
+| Mastodon | `mastodon.py` / custom client | Optional social media posting |
 | Scheduling | `apscheduler` or cron | Flexible scheduling options |
 | Logging | Python `logging` module | Structured JSON output |
 | Config | `.env` + `pydantic-settings` | Type-safe configuration |
@@ -485,7 +505,7 @@ astronomical-events-notify/
 |-------|----------|-------------|
 | Phase 1: Core Infrastructure | 2-3 days | None | ✅ Done |
 | Phase 2: Event Parsing & Classification | 2-3 days | Phase 1 | ✅ Done |
-| Phase 3: Notification System | 2-3 days | Phase 2 | ✅ Done |
+| Phase 3: Notification System | 1 day | Phase 2 | ✅ Done (Apr 21) |
 | Phase 4: Scheduling & Automation | 1-2 days | Phase 3 | ✅ Done |
 | Phase 5: Polish & Monitoring | 2-3 days | Phase 4 |
 

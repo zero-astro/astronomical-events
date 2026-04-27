@@ -1,4 +1,8 @@
-"""RSS fetcher - download and parse in-the-sky.org RSS feed."""
+"""RSS fetcher - download and parse in-the-sky.org RSS feed.
+
+Enhanced with retry logic, exponential backoff, and circuit breaker
+for resilient network operations (Phase 4).
+"""
 
 import logging
 from datetime import datetime, timezone
@@ -9,12 +13,23 @@ except ImportError:
     raise ImportError("feedparser is required. Install with: pip install feedparser")
 
 from event_parser import parse_rss_item
+from retry import with_retry, CircuitBreaker, fetch_with_retry
 
 logger = logging.getLogger(__name__)
 
+# RSS fetch circuit breaker - open after 5 consecutive failures
+rss_circuit_breaker = CircuitBreaker(
+    failure_threshold=5,
+    recovery_timeout=120.0,  # 2 min cooldown before half-open
+)
+
 
 def fetch_rss(url: str) -> feedparser.FeedParserDict | None:
-    """Fetch RSS feed from in-the-sky.org.
+    """Fetch RSS feed from in-the-sky.org with retry logic and circuit breaker.
+
+    Uses exponential backoff (up to 3 retries) for transient failures.
+    Circuit breaker opens after 5 consecutive failures, preventing
+    resource exhaustion during extended outages.
 
     Args:
         url: Full RSS feed URL
@@ -24,7 +39,19 @@ def fetch_rss(url: str) -> feedparser.FeedParserDict | None:
     """
     logger.info(f"Fetching RSS from {url}")
 
-    try:
+    # Check circuit breaker state
+    if rss_circuit_breaker.state == "open":
+        logger.error("Circuit breaker OPEN for RSS fetch - skipping")
+        return None
+
+    @with_retry(
+        max_retries=3,
+        base_delay=2.0,
+        max_delay=60.0,
+        backoff_factor=2.0,
+        retryable_exceptions=(Exception,),
+    )
+    def _do_fetch():
         import urllib.request
         import urllib.error
 
@@ -43,13 +70,20 @@ def fetch_rss(url: str) -> feedparser.FeedParserDict | None:
                     return None
 
                 logger.info(f"Fetched {len(feed.entries)} entries from RSS feed")
+                rss_circuit_breaker.record_success()
                 return feed
             else:
                 logger.error(f"HTTP {response.status} fetching RSS")
-                return None
+                raise urllib.error.HTTPError(url, response.status, f"HTTP {response.status}", {}, None)
 
+    try:
+        feed = _do_fetch()
+        if feed is not None:
+            rss_circuit_breaker.record_success()
+        return feed
     except Exception as e:
-        logger.error(f"Failed to fetch RSS: {e}")
+        rss_circuit_breaker.record_failure()
+        logger.error(f"Failed to fetch RSS after retries: {e}")
         return None
 
 
@@ -67,9 +101,12 @@ def parse_items(feed) -> list[dict]:
 
     items = []
     for entry in feed.entries:
-        parsed = parse_rss_item(entry)
-        if parsed and parsed.get("event_date"):
-            items.append(parsed)
+        try:
+            parsed = parse_rss_item(entry)
+            if parsed and parsed.get("event_date"):
+                items.append(parsed)
+        except Exception as e:
+            logger.warning(f"Failed to parse RSS item: {e}")
 
     logger.info(f"Parsed {len(items)} valid RSS items")
     return items
