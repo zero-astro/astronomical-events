@@ -18,6 +18,7 @@ from typing import Optional
 
 from db_manager import DatabaseManager, Event
 from classifier import get_priority_emoji, format_visibility_label
+from translator import get_translation_for_event
 from mastodon_client import (
     load_mastodon_config,
     post_to_mastodon,
@@ -37,8 +38,16 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = "1.0"
 
 
-def _format_event_for_output(event: Event) -> dict:
+def _format_event_for_output(event: Event, db: DatabaseManager | None = None, target_langs: list[str] | None = None) -> dict:
     """Format a single event into a deterministic JSON-serializable dict.
+
+    Uses translated title/description if available for configured languages,
+    falls back to original English text otherwise.
+
+    Args:
+        event: Event object
+        db: DatabaseManager instance (for translation lookup)
+        target_langs: List of target language codes to check for translations
 
     Returns a fixed-schema dict so consumers always know the structure.
     """
@@ -54,9 +63,23 @@ def _format_event_for_output(event: Event) -> dict:
     else:
         time_label = f"{delta_days} days away"
 
+    # Use translated text if available, fall back to original
+    title = event.title
+    description = event.description or ""
+    target_lang_used = None
+    
+    if db and target_langs:
+        for lang in target_langs:
+            translation = get_translation_for_event(db, event.news_id, lang)
+            if translation and translation.get("translated_title"):
+                title = translation["translated_title"]
+                description = translation.get("translated_description", "") or description
+                target_lang_used = lang
+                break
+
     result = {
         "news_id": event.news_id,
-        "title": event.title,
+        "title": title,
         "event_date": event.event_date.isoformat(),
         "time_label": time_label,
         "priority": event.priority,
@@ -64,6 +87,8 @@ def _format_event_for_output(event: Event) -> dict:
         "event_type": event.event_type or "unknown",
         "is_notified": bool(event.is_notified),
     }
+    if target_lang_used:
+        result["target_lang"] = target_lang_used
 
     if event.visibility_level:
         result["visibility_level"] = event.visibility_level
@@ -76,9 +101,9 @@ def _format_event_for_output(event: Event) -> dict:
         result["event_page_url"] = event.event_page_url
 
     # Truncate description to fixed length for determinism
-    if event.description:
-        result["description"] = event.description[:200]
-        if len(event.description) > 200:
+    if description:
+        result["description"] = description[:200]
+        if len(description) > 200:
             result["description_truncated"] = True
 
     return result
@@ -143,6 +168,18 @@ def send_notifications(config: dict) -> dict:
     """
     db = DatabaseManager(config["db_path"])
 
+    # Get target languages for translation (Phase 3: use translated text in notifications)
+    import json as _json
+    cursor = db.conn.cursor()
+    cursor.execute("SELECT value FROM config WHERE key='target_languages'")
+    row = cursor.fetchone()
+    target_langs = []
+    if row and row["value"]:
+        try:
+            target_langs = [l.strip() for l in _json.loads(row["value"]) if l.strip()]
+        except (_json.JSONDecodeError, TypeError):
+            pass
+
     # Check if Mastodon is configured
     mastodon_config = load_mastodon_config()
     mastodon_enabled = bool(mastodon_config)
@@ -170,7 +207,7 @@ def send_notifications(config: dict) -> dict:
         # P1/P2: Immediate individual events
         immediate_events = p1_events + p2_events
         if immediate_events:
-            formatted = [_format_event_for_output(e) for e in immediate_events]
+            formatted = [_format_event_for_output(e, db, target_langs) for e in immediate_events]
             notifications.append(_format_notification_message(formatted, "P1-P2 High Priority"))
 
             # Mark as notified and post to Mastodon
@@ -181,7 +218,7 @@ def send_notifications(config: dict) -> dict:
                 # Post to Mastodon if enabled (isolated error handling)
                 if mastodon_enabled:
                     try:
-                        status = format_mastodon_status(_format_event_for_output(event))
+                        status = format_mastodon_status(_format_event_for_output(event, db, target_langs))
                         post_to_mastodon(status, mastodon_config)
                     except Exception as e:
                         logger.error(f"Mastodon post failed for {event.news_id}: {e}")
@@ -190,7 +227,7 @@ def send_notifications(config: dict) -> dict:
                 # Send Telegram notification if enabled (isolated error handling)
                 if telegram_enabled:
                     try:
-                        send_telegram_notification(telegram_config, _format_event_for_output(event))
+                        send_telegram_notification(telegram_config, _format_event_for_output(event, db, target_langs))
                     except Exception as e:
                         logger.error(f"Telegram notification failed for {event.news_id}: {e}")
                         stats["failed"] += 1
@@ -200,7 +237,7 @@ def send_notifications(config: dict) -> dict:
             batch_size = 5
             for i in range(0, len(p3_events), batch_size):
                 batch = p3_events[i:i + batch_size]
-                formatted = [_format_event_for_output(e) for e in batch]
+                formatted = [_format_event_for_output(e, db, target_langs) for e in batch]
                 notifications.append(_format_notification_message(formatted, "P3 Medium Priority"))
 
                 for event in batch:
@@ -210,7 +247,7 @@ def send_notifications(config: dict) -> dict:
                     # Post to Mastodon if enabled (isolated error handling)
                     if mastodon_enabled:
                         try:
-                            status = format_mastodon_status(_format_event_for_output(event))
+                            status = format_mastodon_status(_format_event_for_output(event, db, target_langs))
                             post_to_mastodon(status, mastodon_config)
                         except Exception as e:
                             logger.error(f"Mastodon post failed for {event.news_id}: {e}")
@@ -219,7 +256,7 @@ def send_notifications(config: dict) -> dict:
                     # Send Telegram notification if enabled (isolated error handling)
                     if telegram_enabled:
                         try:
-                            send_telegram_notification(telegram_config, _format_event_for_output(event))
+                            send_telegram_notification(telegram_config, _format_event_for_output(event, db, target_langs))
                         except Exception as e:
                             logger.error(f"Telegram notification failed for {event.news_id}: {e}")
                             stats["failed"] += 1
@@ -229,7 +266,7 @@ def send_notifications(config: dict) -> dict:
         all_upcoming = db.get_upcoming_events(days=window_days)
 
         if all_upcoming:
-            formatted = [_format_event_for_output(e) for e in all_upcoming]
+            formatted = [_format_event_for_output(e, db, target_langs) for e in all_upcoming]
             notifications.append(_format_notification_message(formatted, "Daily Digest (P4-P5)"))
             stats["sent_digest"] = len(all_upcoming)
 

@@ -22,29 +22,29 @@ def load_mastodon_config() -> dict:
         skill_dir = Path(__file__).resolve().parent.parent
         ws = str(skill_dir.parent.parent / "workspace")
     config_path = Path(ws) / "config" / "mastodon.json"
-    
+
     if not config_path.exists():
         logger.warning("Mastodon config not found at %s", config_path)
         return {}
-    
+
     try:
         with open(config_path) as f:
             data = json.load(f)
-        
+
         mastodon_config = data.get("mastodon")
         if not mastodon_config:
             logger.warning("No 'mastodon' key found in config file")
             return {}
-        
+
         # Validate required fields
         required = ["instance_url", "access_token"]
         for field in required:
             if field not in mastodon_config:
                 logger.error(f"Missing required Mastodon config field: {field}")
                 return {}
-        
+
         return mastodon_config
-    
+
     except Exception as e:
         logger.error(f"Failed to load Mastodon config: {e}", exc_info=True)
         return {}
@@ -52,23 +52,23 @@ def load_mastodon_config() -> dict:
 
 def create_mastodon_client(mastodon_config: dict):
     """Create and return a Mastodon client instance.
-    
+
     Args:
         mastodon_config: Dict with instance_url, access_token (and optionally client_key/secret)
-        
+
     Returns:
         Mastodon client instance or None if config is invalid
     """
     try:
         from mastodon import Mastodon
-        
+
         instance_url = mastodon_config["instance_url"]
         access_token = mastodon_config["access_token"]
-        
+
         # If client credentials are provided, register app first
         client_key = mastodon_config.get("client_key")
         client_secret = mastodon_config.get("client_secret")
-        
+
         if client_key and client_secret:
             # Use existing credentials (for pre-registered apps)
             return Mastodon(
@@ -81,7 +81,7 @@ def create_mastodon_client(mastodon_config: dict):
                 token=access_token,
                 api_base_url=instance_url
             )
-    
+
     except Exception as e:
         logger.error(f"Failed to create Mastodon client: {e}", exc_info=True)
         return None
@@ -89,11 +89,11 @@ def create_mastodon_client(mastodon_config: dict):
 
 def post_to_mastodon(message: str, mastodon_config: Optional[dict] = None) -> bool:
     """Post a message to Mastodon.
-    
+
     Args:
         message: The status message to post (max 500 chars for Mastodon)
         mastodon_config: Mastodon config dict (loads from file if None)
-        
+
     Returns:
         True if posted successfully, False otherwise
     """
@@ -101,31 +101,31 @@ def post_to_mastodon(message: str, mastodon_config: Optional[dict] = None) -> bo
         # Load config if not provided
         if mastodon_config is None:
             mastodon_config = load_mastodon_config()
-        
+
         if not mastodon_config:
             logger.warning("No Mastodon configuration available")
             return False
-        
+
         client = create_mastodon_client(mastodon_config)
         if client is None:
             return False
-        
+
         # Truncate message to 500 chars (Mastodon limit)
         if len(message) > 500:
             message = message[:497] + "..."
-        
+
         # Verify connection first
         try:
             client.account_verify_credentials()
         except Exception as e:
             logger.error(f"Mastodon authentication failed: {e}")
             return False
-        
+
         # Post the status
         client.status_post(message)
         logger.info(f"Mastodon post successful: {message[:80]}...")
         return True
-    
+
     except Exception as e:
         logger.error(f"Mastodon posting failed: {e}", exc_info=True)
         return False
@@ -137,12 +137,35 @@ EVENT_TYPE_EMOJI = {
     "meteor_shower": "🌠",
     "eclipse": "🌑",
     "nova": "💥",
-    "occultation": "🌑",
+    "occultation": "🌒",
     "planet_conjunction": "🪐",
     "moon_conjunction": "🌙",
     "opposition": "🔴",
     "perihelion": "☀️",
     "galaxy": "🌀",
+}
+
+# Title-based emoji mapping for events without a clear event_type
+TITLE_EMOJI_MAP = {
+    "full moon": "🌕",
+    "new moon": "🌑",
+    "first quarter": "🌓",
+    "last quarter": "🌗",
+    "apogee": "🌍",
+    "aphelion": "☀️",
+    "perigee": "🌍",
+    "perihelion": "☀️",
+    "mercury": "🪨",
+    "venus": "✨",
+    "mars": "🔴",
+    "jupiter": "🟤",
+    "saturn": "🪐",
+    "uranus": "🔵",
+    "neptune": "💙",
+    "eris": "❄️",
+    "pluto": "⚫",
+    "antares": "❤️",
+    "regulus": "💎",
 }
 
 # Planet name translations
@@ -222,7 +245,7 @@ def _get_priority_info(priority: int) -> tuple:
 # Basque title translation helper - full sentence style
 def _translate_title(title: str) -> str:
     """Translate English event titles to Basque in natural sentence style.
-    
+
     Converts titles like 'Comet C/2025 R3 (PANSTARRS) passes perihelion'
     into 'C/2025 R3 (PANSTARRS) kometak perihelioa igaro du'.
     """
@@ -235,64 +258,64 @@ def _translate_title(title: str) -> str:
         "136108 Haumea at opposition": "136108 Haumea oposizioan dago",
         "Messier 101 is well placed": "M101 galaxia ondo kokatuta dago",
     }
-    
+
     for eng, bas in full_translations.items():
         if eng.lower() in title.lower():
             return bas
-    
+
     # Pattern-based translations for comet perihelion events
     import re
-    
+
     # First, strip date prefix: "19 Apr 2026 (Today): " or similar
     cleaned = re.sub(r'^\d+\s+\w+\s+\d{4}\s+\([^)]*\):\s*', '', title)
-    
+
     # Match: "Comet C/2025 R3 (PANSTARRS) passes perihelion"
     m = re.search(r'(?:Comet\s+)?(C/\d{4}\s+\w+\s*\([^)]*\))\s+passes\s+perihelion', cleaned, re.IGNORECASE)
     if m:
         comet_name = m.group(1).strip()
         return _translate_planets(f"{comet_name} kometak perihelioa igaro du")
-    
+
     # Match: "Comet XXX passes perihelion" (no parentheses)
     m = re.search(r'(?:Comet\s+)?([^\s]+)\s+passes\s+perihelion', cleaned, re.IGNORECASE)
     if m:
         comet_name = m.group(1).strip()
         return _translate_planets(f"{comet_name} kometak perihelioa igaro du")
-    
+
     # Match: "XXX at opposition"
     m = re.search(r'(.+)\s+at\s+opposition', title, re.IGNORECASE)
     if m:
         obj = m.group(1).strip()
         return _translate_planets(f"{obj} oposizioan dago")
-    
+
     # Match: "XXX is well placed"
     m = re.search(r'(.+)\s+is\s+well\s+placed', title, re.IGNORECASE)
     if m:
         obj = m.group(1).strip()
         return _translate_planets(f"{obj} ondo kokatuta dago")
-    
+
     # If no translation found, clean up the title (remove date prefix)
     result = cleaned
-    
+
     # Translate any remaining English planet names to Basque
     result = _translate_planets(result)
-    
+
     return result
 
 
 def format_mastodon_status(event_data: dict) -> str:
     """Format event data into a Mastodon-friendly Basque status message.
-    
+
     Format:
         📅 Gaur
         ☄️ C/2025 R3 (PANSTARRS) kometak perihelioa igaro du
         🔭 Begi hutsez ikustekoa
         🟡 L3 (Lehentasun baxua)
-    
+
         🌍 https://in-the-sky.org/news.php?id=...
-    
+
     Args:
         event_data: Dict with event information from notification
-        
+
     Returns:
         Formatted string for Mastodon (max 500 chars)
     """
@@ -300,63 +323,168 @@ def format_mastodon_status(event_data: dict) -> str:
     time_label = event_data.get("time_label", "unknown")
     title = event_data.get("title", "")
     event_type = event_data.get("event_type", "unknown")
-    
+
     # Get Basque priority info
     emoji, level, desc = _get_priority_info(priority)
-    
+
     # Translate time label to Basque (Gaur/Biharko/etc)
     basque_time = _translate_time_label(time_label)
-    
+
     # Translate title to Basque
     basque_title = _translate_title(title)
-    
+
     # Get event type emoji
     type_emoji = EVENT_TYPE_EMOJI.get(event_type, "🌟")
-    
+
     # Build status message in exact user-specified format
     lines = []
     lines.append(f"📅 {basque_time}")
     lines.append(f"{type_emoji} {basque_title}")
-    
+
     # Add visibility if available (translated to Basque)
     vis_label = event_data.get("visibility_label", "")
     if vis_label:
         basque_vis = _translate_visibility(vis_label)
         lines.append(f"🔭 {basque_vis}")
-    
+
     # Add priority line
     lines.append(f"{emoji} {level} ({desc})")
-    
+
     # Add URL if available
     url = event_data.get("event_page_url", "")
     if url:
         lines.append("")
         lines.append(f"🌍 {url}")
-    
+
     return "\n".join(lines)
+
+
+def _get_event_emoji(event_data: dict) -> str:
+    """Get the best emoji for an event based on type and title.
+
+    Falls back to title-based matching if event_type is unknown or generic.
+    """
+    event_type = event_data.get("event_type", "")
+    title = event_data.get("title", "").lower()
+
+    # First try event_type mapping
+    emoji = EVENT_TYPE_EMOJI.get(event_type)
+    if emoji and event_type != "unknown":
+        return emoji
+
+    # Fall back to title-based matching
+    for keyword, em in TITLE_EMOJI_MAP.items():
+        if keyword in title:
+            return em
+
+    # Default
+    return "🌟"
+
+
+def _clean_title(title: str) -> str:
+    """Clean up event title — remove date prefix and extra info.
+
+    Args:
+        title: Raw event title like '01 May 2026 (3 days away): Full Moon'
+
+    Returns:
+        Cleaned title like 'Full Moon'
+    """
+    import re
+    # Remove date prefix: "01 May 2026 (3 days away): "
+    cleaned = re.sub(r'^\d{1,2}\s+\w+\s+\d{4}\s*\([^)]*\)?:?\s*', '', title)
+    return cleaned.strip()
+
+
+def _translate_digest_title(title: str) -> str:
+    """Translate a cleaned event title to Basque for digest display.
+
+    Uses the same translation logic as format_mastodon_status but
+    returns only the short translated title (no date prefix).
+    """
+    # Full translations first
+    full_translations = {
+        "full moon": "Ilargi betea",
+        "new moon": "Ilargi berria",
+        "first quarter": "Lehen laurdena",
+        "last quarter": "Azken laurdena",
+        "lunar occultation of antares": "Antaresen ilargi okultazioa",
+        "the moon at apogee": "Ilargia apogeean",
+        "the moon at aphelion": "Ilargia afelian",
+        "conjunction of mercury and eris": "Merkurio eta Erisren konjuntzioa",
+        "η-aquariid meteor shower 2026": "η-Aquariidak meteor-ekasea 2026",
+    }
+
+    lower = title.lower()
+    for eng, bas in full_translations.items():
+        if eng == lower:
+            return bas
+
+    # Pattern-based: conjunction of X and Y
+    import re
+    m = re.search(r'conjunction of (.+?) and (.+)', lower)
+    if m:
+        planet1 = _translate_planets(m.group(1).title())
+        planet2 = _translate_planets(m.group(2).title())
+        return f"{planet1} eta {planet2}ren konjuntzioa"
+
+    # Pattern-based: lunar occultation of X
+    m = re.search(r'lunar occultation of (.+)', lower)
+    if m:
+        star = _translate_planets(m.group(1).title())
+        return f"{star}ren ilargi okultazioa"
+
+    # Pattern-based: the moon at X
+    m = re.search(r'the moon at (.+)', lower)
+    if m:
+        pos = _translate_planets(m.group(1).title())
+        return f"Ilargia {pos}"
+
+    # Pattern-based: meteor shower
+    m = re.search(r'(.+) meteor shower', lower)
+    if m:
+        shower = m.group(1).strip()
+        return f"{shower} meteor-ekasea"
+
+    # Default: return cleaned title as-is (already cleaned by _clean_title)
+    return title
 
 
 def format_mastodon_digest(events: list[dict]) -> str:
     """Format a digest of events into Basque for Mastodon.
-    
-    Compact format — one line per event to fit within 500 chars.
-    
+
+    Rich format — each event on its own line with proper emoji and short date.
+    Fits within 500 chars by limiting to ~6 events.
+
     Args:
         events: List of event dicts from notification
-        
+
     Returns:
         Formatted digest string in Basque (max 500 chars)
     """
-    lines = [f"📅 Egungo Laburpena ({len(events)} gertaera):"]
-    
-    for evt in events[:8]:  # Limit to first 8 for Mastodon
-        event_status = format_mastodon_status(evt)
-        # Extract just the title line from the formatted status
-        for line in event_status.split("\n"):
-            if any(line.startswith(e) for e in ["🌟", "☄️", "🌠", "🔴", "🌙", "🪐", "☀️", "🌀"]):
-                lines.append(line)
-    
-    if len(events) > 8:
-        lines.append(f"... eta {len(events) - 8} gertaera gehiago")
-    
+    lines = [f"📅 Astronomia Laburpena"]
+
+    for evt in events[:6]:  # Limit to first 6 for Mastodon
+        emoji = _get_event_emoji(evt)
+        raw_title = _clean_title(evt.get("title", ""))
+        time_label = evt.get("time_label", "")
+
+        # Translate title to Basque
+        basq_title = _translate_digest_title(raw_title)
+
+        # Short date label
+        if time_label == "past":
+            date_str = "Gaur"
+        elif "days away" in time_label:
+            days = time_label.split()[0]
+            date_str = f"+{days}d"
+        else:
+            date_str = time_label
+
+        # Truncate title to ~35 chars
+        if len(basq_title) > 35:
+            basq_title = basq_title[:32] + "…"
+
+        lines.append(f"{emoji} {date_str}: {basq_title}")
+
     return "\n".join(lines)

@@ -12,6 +12,8 @@ Usage:
     python main.py schedule --run-once   Run one scheduler cycle and exit
     python main.py health         Health check (JSON output, exit codes: 0=healthy, 1=degraded, 2=unhealthy)
     python main.py dashboard      Start web dashboard (Phase 5)
+    python main.py translate --lang eu,ca   Translate missing events to specified language(s)
+    python main.py translate-all              Backfill translations for all configured languages
 """
 
 import sys
@@ -43,6 +45,7 @@ from scheduler import (
     cmd_health,
 )
 from dashboard import cmd_dashboard
+from translate import get_provider_config, PROVIDERS
 
 # Configure logging
 logging.basicConfig(
@@ -457,6 +460,166 @@ def _parse_event_date(title):
         return None
 
 
+def cmd_translate(config):
+    """Translate missing events to specified language(s)."""
+    setup_logging()
+    logger.info("=" * 60)
+    logger.info("Astronomical Events - Translate")
+    logger.info("=" * 60)
+
+    # Parse --lang argument
+    parser = argparse.ArgumentParser(description="Translate missing events")
+    parser.add_argument("--lang", type=str, default=None,
+                        help="Comma-separated list of target languages (e.g., eu,ca)")
+    args, _ = parser.parse_known_args()
+
+    db = DatabaseManager(config["db_path"])
+
+    # Determine which languages to translate
+    if args.lang:
+        target_langs = [l.strip() for l in args.lang.split(",")]
+        logger.info(f"Translating to specified languages: {target_langs}")
+    else:
+        from translator import get_target_languages as _get_tlangs
+        target_langs = _get_tlangs(db)
+        if not target_langs:
+            logger.error("No target languages configured. Set 'target_languages' in config table.")
+            db.close()
+            sys.exit(1)
+        logger.info(f"Translating to configured languages: {target_langs}")
+
+    # Get provider config (use first available from env or default lm-studio)
+    import os
+    provider_name = os.environ.get("TRANSLATION_PROVIDER", "lm-studio")
+    if provider_name not in PROVIDERS:
+        logger.warning(f"Unknown provider '{provider_name}', falling back to 'lm-studio'")
+        provider_name = "lm-studio"
+    
+    provider_config = get_provider_config(provider_name)
+
+    # Translate each language
+    from translator import translate_missing_events
+    results = translate_missing_events(db, provider_config)
+
+    db.close()
+
+    logger.info("-" * 40)
+    logger.info("Translation complete!")
+    for lang, stats in results.items():
+        logger.info(f"  {lang}: {stats['translated']} translated, "
+                     f"{stats['failed']} failed")
+
+
+def cmd_translate_all(config):
+    """Backfill translations for all configured languages."""
+    setup_logging()
+    logger.info("=" * 60)
+    logger.info("Astronomical Events - Translate All (Backfill)")
+    logger.info("=" * 60)
+
+    db = DatabaseManager(config["db_path"])
+
+    from translator import get_target_languages as _get_tlangs
+    target_langs = _get_tlangs(db)
+    if not target_langs:
+        logger.error("No target languages configured.")
+        db.close()
+        sys.exit(1)
+
+    import os
+    provider_name = os.environ.get("TRANSLATION_PROVIDER", "lm-studio")
+    if provider_name not in PROVIDERS:
+        provider_name = "lm-studio"
+    
+    provider_config = get_provider_config(provider_name)
+
+    from translator import translate_missing_events
+    results = translate_missing_events(db, provider_config)
+
+    db.close()
+
+    logger.info("-" * 40)
+    total_translated = sum(r["translated"] for r in results.values())
+    total_failed = sum(r["failed"] for r in results.values())
+    logger.info(f"Backfill complete! {total_translated} translated, {total_failed} failed")
+
+
+def cmd_set_lang(config):
+    """Set target language(s) for translation."""
+    setup_logging()
+    logger.info("=" * 60)
+    logger.info("Astronomical Events - Set Target Language(s)")
+    logger.info("=" * 60)
+
+    db = DatabaseManager(config["db_path"])
+
+    # Parse --lang argument
+    parser = argparse.ArgumentParser(description="Set target language(s)")
+    parser.add_argument("--lang", type=str, required=True,
+                        help="Comma-separated list of target languages (e.g., eu,ca)")
+    args, _ = parser.parse_known_args()
+
+    # Validate languages
+    valid_langs = {"eu", "ca", "gl", "es", "fr"}
+    new_langs = [l.strip() for l in args.lang.split(",")]
+    invalid = [l for l in new_langs if l not in valid_langs]
+    
+    if invalid:
+        logger.error(f"Invalid language(s): {invalid}. Valid: {sorted(valid_langs)}")
+        db.close()
+        sys.exit(1)
+
+    # Update config table
+    import json as _json
+    cursor = db.conn.cursor()
+    cursor.execute("UPDATE OR REPLACE INTO config (key, value) VALUES ('target_languages', ?)",
+                   (_json.dumps(new_langs),))
+    db.conn.commit()
+
+    logger.info(f"Target languages set to: {new_langs}")
+    
+    # Verify
+    cursor.execute("SELECT value FROM config WHERE key='target_languages'")
+    row = cursor.fetchone()
+    if row and row["value"]:
+        stored = _json.loads(row["value"])
+        logger.info(f"Stored: {stored}")
+    
+    db.close()
+
+
+def cmd_show_langs(config):
+    """Show current target language configuration."""
+    setup_logging()
+    logger.info("=" * 60)
+    logger.info("Astronomical Events - Target Languages")
+    logger.info("=" * 60)
+
+    db = DatabaseManager(config["db_path"])
+
+    from translator import get_target_languages as _get_tlangs
+    target_langs = _get_tlangs(db)
+    
+    if not target_langs:
+        logger.info("No target languages configured.")
+        logger.info("Use: python3 scripts/main.py set-lang --lang eu,ca")
+    else:
+        valid_langs = {"eu": "Basque (Euskara)", "ca": "Catalan (Català)", 
+                       "gl": "Galician (Galego)", "es": "Spanish (Español)", 
+                       "fr": "French (Français)"}
+        logger.info(f"Current target languages:")
+        for lang in target_langs:
+            name = valid_langs.get(lang, "Unknown")
+            logger.info(f"  - {lang}: {name}")
+    
+    # Show translation provider
+    import os
+    provider_name = os.environ.get("TRANSLATION_PROVIDER", "lm-studio")
+    logger.info(f"Translation provider: {provider_name}")
+    
+    db.close()
+
+
 def main():
     """Main CLI entry point."""
     if len(sys.argv) < 2:
@@ -476,6 +639,10 @@ def main():
         "health": cmd_health,
         "dashboard": cmd_dashboard,
         "history": cmd_history,
+        "translate": cmd_translate,
+        "translate-all": cmd_translate_all,
+        "set-lang": cmd_set_lang,
+        "show-langs": cmd_show_langs,
     }
 
     if command not in commands:

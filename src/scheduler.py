@@ -29,6 +29,7 @@ from classifier import classify_event
 from page_scraper import fetch_event_page, parse_page
 from db_manager import DatabaseManager
 from notification import send_notifications
+from translate import get_provider_config, PROVIDERS
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,26 @@ def run_fetch_pipeline(config: dict) -> dict:
                 logger.warning(f"Thumbnail scrape failed for {event.title}: {e}")
 
         stats["scraped"] = scraped
+
+        # Phase 2.4: Auto-translate new events (optional, non-blocking)
+        try:
+            import os
+            provider_name = os.environ.get("TRANSLATION_PROVIDER", "lm-studio")
+            if provider_name not in PROVIDERS:
+                provider_name = "lm-studio"
+            
+            provider_config = get_provider_config(provider_name)
+            from translator import translate_missing_events, get_target_languages
+            target_langs = get_target_languages(db)
+            
+            if target_langs:
+                logger.info(f"Auto-translating new events to: {target_langs}")
+                results = translate_missing_events(db, provider_config)
+                for lang, r in results.items():
+                    logger.info(f"  Auto-translate {lang}: {r['translated']} translated")
+        except Exception as e:
+            # Translation failure is non-blocking — events still stored with English text
+            logger.warning(f"Auto-translation failed (events kept in English): {e}")
 
     except Exception as e:
         logger.error(f"Pipeline error: {e}", exc_info=True)

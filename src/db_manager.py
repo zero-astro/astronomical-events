@@ -139,6 +139,37 @@ class DatabaseManager:
             )
         """)
 
+        # Translations table - i18n cached translations (Phase 0.1)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS translations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                news_id TEXT NOT NULL,
+                source_lang TEXT DEFAULT 'en',
+                target_lang TEXT NOT NULL,
+                translated_title TEXT,
+                translated_description TEXT,
+                provider TEXT DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(news_id, target_lang)
+            )
+        """)
+
+        # Indexes for fast translation lookup (Phase 0.2)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_translations_news_id ON translations(news_id)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_translations_target_lang ON translations(target_lang)"
+        )
+
+        # Initialize default target_languages config if not present (Phase 0.3)
+        try:
+            cursor.execute(
+            cursor.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('target_languages', '[\"eu\"]')")
+            )
+        except Exception:
+            pass
+
         self.conn.commit()
         logger.info("Database tables created/verified")
 
@@ -471,6 +502,84 @@ class DatabaseManager:
             event_page_url=row["event_page_url"],
             is_notified=bool(row["is_notified"]),
         )
+
+
+    def get_translation(self, news_id: str, target_lang: str):
+        """Get a cached translation for an event.
+
+        Args:
+            news_id: Event identifier
+            target_lang: Target language code (e.g., 'eu')
+
+        Returns:
+            sqlite3.Row with translation data or None if not found
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM translations WHERE news_id = ? AND target_lang = ?",
+            (news_id, target_lang)
+        )
+        return cursor.fetchone()
+
+    def insert_or_update_translation(self, news_id: str, target_lang: str,
+                                      translated_title: str, translated_description: str,
+                                      provider: str = "") -> bool:
+        """Insert or update a translation for an event.
+
+        Args:
+            news_id: Event identifier
+            target_lang: Target language code
+            translated_title: Translated title text
+            translated_description: Translated description text
+            provider: Translation provider name (e.g., 'lm-studio')
+
+        Returns:
+            True if successful
+        """
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO translations (news_id, target_lang, translated_title,
+                                          translated_description, provider)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(news_id, target_lang) DO UPDATE SET
+                    translated_title=excluded.translated_title,
+                    translated_description=excluded.translated_description,
+                    provider=excluded.provider,
+                    created_at=CURRENT_TIMESTAMP
+            """, (news_id, target_lang, translated_title, translated_description, provider))
+            self.conn.commit()
+            logger.info(f"Translation stored: {news_id} -> {target_lang}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to store translation for {news_id}: {e}")
+            self.conn.rollback()
+            return False
+
+    def get_events_needing_translation(self, target_langs: list[str]) -> list[Event]:
+        """Get events that don't have translations for given target languages.
+
+        Args:
+            target_langs: List of language codes to check (e.g., ['eu', 'ca'])
+
+        Returns:
+            List of Event objects needing translation
+        """
+        if not target_langs:
+            return []
+
+        placeholders = ",".join("?" for _ in target_langs)
+        cursor = self.conn.cursor()
+        cursor.execute(f"""
+            SELECT DISTINCT e.* FROM events e
+            WHERE NOT EXISTS (
+                SELECT 1 FROM translations t
+                WHERE t.news_id = e.news_id AND t.target_lang IN ({placeholders})
+            )
+            ORDER BY e.event_date ASC
+        """, target_langs)
+
+        return [self._row_to_event(row) for row in cursor.fetchall()]
 
     def close(self):
         """Close the database connection."""
