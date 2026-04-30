@@ -513,6 +513,110 @@ astronomical-events-notify/
 
 ---
 
+### Phase 6: Rich Metadata Extraction & Structured Output
+**Goal:** Enrich event data with detailed information from in-the-sky.org pages, store it in the database, and use it for structured output across all channels.
+
+**Motivation:** Current `description` field is too short (46 chars) to produce rich, informative posts. Web pages contain valuable details: peak dates, rates, active periods, visibility regions, radiant constellations, magnitudes, etc.
+
+**Tasks:**
+1. [ ] Add 3 new columns to `events` table (`rich_description_en`, `viewing_info_en`, `event_details_json`) + migration logic in `db_manager.py`
+2. [ ] Enhance `page_scraper.py` to extract rich metadata from event pages (meteor showers, lunar events, conjunctions)
+3. [ ] Update `main.py` pipeline: RSS fetch → enrichment phase (batch scrape with 1s rate limit) → store enriched data
+4. [ ] Extend translation pipeline (`translator.py`) for new fields + add columns to `translations` table
+5. [ ] Upgrade `post-next-event.py` Mastodon format to use structured card sections ("Zer da?", "Non ikusi?", etc.)
+6. [ ] Test end-to-end: fetch → enrich → translate → post, verify JSON schema compatibility across channels
+7. [ ] Update timeline estimate and mark Phase 6 as complete
+
+**Deliverable:** Rich metadata stored in DB before translation; structured multi-section posts for Mastodon/Telegram using enriched data.
+
+#### 6.1 Database Schema Extension
+Add new columns to the `events` table:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `rich_description_en` | TEXT | Detailed description in English ("Zer da?" section) |
+| `viewing_info_en` | TEXT | Viewing information in English ("Non ikusi?" section) |
+| `event_details_json` | JSON | Structured metadata: peak_date, rate, active_from, active_to, radiant, magnitude, etc. |
+
+**Migration SQL:**
+```sql
+ALTER TABLE events ADD COLUMN rich_description_en TEXT;
+ALTER TABLE events ADD COLUMN viewing_info_en TEXT;
+ALTER TABLE events ADD COLUMN event_details_json TEXT;
+```
+
+#### 6.2 Event Page Scraper Enhancement (`page_scraper.py`)
+Extract detailed information from each event page:
+
+**Meteor Showers:**
+- Active period (start/end dates)
+- Peak date and time
+- Zenithal Hourly Rate (ZHR)
+- Radiant constellation and coordinates
+- Best viewing hemisphere
+
+**Lunar Events (eclipses, occultations):**
+- Event type details (total/partial/penumbral)
+- Magnitude
+- Duration of key phases
+- Visible regions/countries
+
+**Conjunctions:**
+- Objects involved
+- Separation angle
+- Best viewing time window
+
+**General pattern:** Parse the main content `<div>` or article body, extract paragraphs and bullet points.
+
+#### 6.3 Translation Pipeline Extension (`translator.py`)
+Extend translation to cover new fields:
+- `rich_description_en` → translated to target languages (e.g., Basque `eu`)
+- `viewing_info_en` → translated to target languages
+- Store translations in the `translations` table with new columns:
+  - `translated_rich_description`
+  - `translated_viewing_info`
+
+#### 6.4 Mastodon Post Format Upgrade (`post-next-event.py`)
+Use enriched data for structured posts:
+
+```
+🌠 METEOR KAIOA: η-AQUARIOIDEAK 2026
+
+💫 Zer da?
+Eta Aquariideak urteko ekaitzarik oparoenetako bat dira...
+
+📅 Gailurra: Maiatzaren 6a (asteartea)
+⏱️ Denbora: ~7 egunera
+🔭 Ikusgarritasuna: Begi hutsez, ~50 meteoro/ordutan
+
+🌍 Non ikusi?
+Ipar hemisferiotik ikusgarriena. Hegoaldean ere bai...
+
+📖 Informazio gehiago: https://in-the-sky.org/news.php?id=...
+```
+
+#### 6.5 RSS Fetch Pipeline Update (`main.py`)
+After initial RSS fetch + basic classification, iterate over each event's `event_page_url` and:
+1. Fetch the page (with rate limiting — 1s delay between requests)
+2. Extract rich metadata using BeautifulSoup
+3. Populate `rich_description_en`, `viewing_info_en`, `event_details_json`
+4. Store in database
+5. Mark as processed so it's not re-scraped unnecessarily
+
+**Rate limit strategy:**
+- Max 1 request/second to avoid overwhelming the server
+- Batch scrape: fetch all event pages during a dedicated "enrich" phase
+- Cache scraped data — only refresh for new events or if `event_details_json` is empty
+
+#### 6.6 Translation Priority
+Translate enriched fields **after** enrichment phase completes:
+1. Identify events with rich metadata but no translations → `get_events_needing_translation()`
+2. Translate `rich_description_en` and `viewing_info_en` to configured target languages
+3. Store in `translations` table
+4. Use translated versions for channel output
+
+---
+
 ## 13. Future Enhancements (Out of Scope v1)
 
 - 📸 Sky map image generation for each event
