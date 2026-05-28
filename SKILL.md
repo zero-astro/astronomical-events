@@ -288,6 +288,12 @@ Translation is sequential (one event at a time) with a **5-second delay** betwee
 delay = 1  # seconds between requests (default: 5)
 ```
 
+### Parallel Translation Note
+
+`global_batch_translate()` runs field-type batches **sequentially** by default because LM Studio processes one request at a time. Parallel (`ThreadPoolExecutor`) was tested but reverted — it would only queue requests without speeding things up.
+
+If you switch to a provider that supports concurrent requests (e.g., OpenAI API, Ollama with `--parallel`), re-enable parallel in `src/translate.py` line ~628 by uncommenting the `ThreadPoolExecutor(max_workers=2)` block and removing the sequential fallback code.
+
 The translation provider defaults to `lm-studio` at `http://192.168.16.20:1234/v1` with model `qwen3.6-35b-a3b`. Override via env vars:
 
 ```bash
