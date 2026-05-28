@@ -1,0 +1,12 @@
+# Timer for Astronomical Events fetch+process — daily at 11:00 Europe/Madrid
+
+[Unit]
+Description=Astronomical Events Daily Fetch Timer
+
+[Timer]
+OnCalendar=*-*-* 11:00:00
+TimeZone=Europe/Madrid
+Persistent=true
+
+[Install]
+WantedBy=timers.target

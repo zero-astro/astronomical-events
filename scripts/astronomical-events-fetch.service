@@ -1,0 +1,21 @@
+# Systemd oneshot service for Astronomical Events fetch+process
+# Runs daily at 11:00 via timer
+
+[Unit]
+Description=Astronomical Events RSS Fetch & Process
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/urtzai/.openclaw/workspace/skills/astronomical-events/scripts/main.py process
+WorkingDirectory=/home/urtzai/.openclaw/workspace/skills/astronomical-events
+EnvironmentFile=/home/urtzai/.openclaw/workspace/skills/astronomical-events/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=astronomical-events-fetch
+
+[Install]
+WantedBy=multi-user.target

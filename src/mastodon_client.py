@@ -1,0 +1,653 @@
+"""Mastodon client for posting astronomical event notifications.
+
+Uses Mastodon.py library to post status updates to a Mastodon instance.
+Credentials are loaded from config/mastodon.json in the workspace.
+"""
+
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+def load_mastodon_config() -> dict:
+    """Load Mastodon credentials from config file."""
+    # Resolve workspace path: env var > relative to skill dir
+    ws = os.environ.get("OPENCLAW_WORKSPACE_DIR", "")
+    if not ws:
+        # Skill is at ~/.openclaw/workspace/skills/astronomical-events/
+        skill_dir = Path(__file__).resolve().parent.parent
+        # Walk up: src -> astronomical-events -> skills -> workspace
+        candidate = str(skill_dir / "../../.." / "config")
+        ws_candidate = str(Path(candidate).parents[0])
+        config_path_check = Path(ws_candidate) / "config" / "mastodon.json"
+        if config_path_check.exists():
+            ws = ws_candidate
+        else:
+            # Fallback: try parent of skills directory
+            ws = str(skill_dir.parent.parent)
+    config_path = Path(ws) / "config" / "mastodon.json"
+    config_path = Path(ws) / "config" / "mastodon.json"
+
+    if not config_path.exists():
+        logger.warning("Mastodon config not found at %s", config_path)
+        return {}
+
+    try:
+        with open(config_path) as f:
+            data = json.load(f)
+
+        mastodon_config = data.get("mastodon")
+        if not mastodon_config:
+            logger.warning("No 'mastodon' key found in config file")
+            return {}
+
+        # Validate required fields
+        required = ["instance_url", "access_token"]
+        for field in required:
+            if field not in mastodon_config:
+                logger.error(f"Missing required Mastodon config field: {field}")
+                return {}
+
+        return mastodon_config
+
+    except Exception as e:
+        logger.error(f"Failed to load Mastodon config: {e}", exc_info=True)
+        return {}
+
+
+def create_mastodon_client(mastodon_config: dict):
+    """Create and return a Mastodon client instance.
+
+    Args:
+        mastodon_config: Dict with instance_url, access_token (and optionally client_key/secret)
+
+    Returns:
+        Mastodon client instance or None if config is invalid
+    """
+    try:
+        from mastodon import Mastodon
+
+        instance_url = mastodon_config["instance_url"]
+        access_token = mastodon_config["access_token"]
+
+        # If client credentials are provided, register app first
+        client_key = mastodon_config.get("client_key")
+        client_secret = mastodon_config.get("client_secret")
+
+        if client_key and client_secret:
+            # Use existing credentials (for pre-registered apps)
+            return Mastodon(
+                access_token=access_token,
+                api_base_url=instance_url
+            )
+        else:
+            # No client credentials - just use access token directly
+            return Mastodon(
+                token=access_token,
+                api_base_url=instance_url
+            )
+
+    except Exception as e:
+        logger.error(f"Failed to create Mastodon client: {e}", exc_info=True)
+        return None
+
+
+def post_to_mastodon(message: str, mastodon_config: Optional[dict] = None) -> bool:
+    """Post a message to Mastodon.
+
+    Args:
+        message: The status message to post (max 500 chars for Mastodon)
+        mastodon_config: Mastodon config dict (loads from file if None)
+
+    Returns:
+        True if posted successfully, False otherwise
+    """
+    try:
+        # Load config if not provided
+        if mastodon_config is None:
+            mastodon_config = load_mastodon_config()
+
+        if not mastodon_config:
+            logger.warning("No Mastodon configuration available")
+            return False
+
+        client = create_mastodon_client(mastodon_config)
+        if client is None:
+            return False
+
+        # Truncate message to 500 chars (Mastodon limit)
+        if len(message) > 500:
+            message = message[:497] + "..."
+
+        # Verify connection first
+        try:
+            client.account_verify_credentials()
+        except Exception as e:
+            logger.error(f"Mastodon authentication failed: {e}")
+            return False
+
+        # Post the status
+        client.status_post(message)
+        logger.info(f"Mastodon post successful: {message[:80]}...")
+        return True
+
+    except Exception as e:
+        logger.error(f"Mastodon posting failed: {e}", exc_info=True)
+        return False
+
+
+# Event type emoji mapping
+EVENT_TYPE_EMOJI = {
+    "comet": "☄️",
+    "meteor_shower": "🌠",
+    "eclipse": "🌑",
+    "nova": "💥",
+    "occultation": "🌒",
+    "planet_conjunction": "🪐",
+    "moon_conjunction": "🌙",
+    "opposition": "🔴",
+    "perihelion": "☀️",
+    "galaxy": "🌀",
+}
+
+# Title-based emoji mapping for events without a clear event_type
+TITLE_EMOJI_MAP = {
+    "full moon": "🌕",
+    "new moon": "🌑",
+    "first quarter": "🌓",
+    "last quarter": "🌗",
+    "apogee": "🌍",
+    "aphelion": "☀️",
+    "perigee": "🌍",
+    "perihelion": "☀️",
+    "mercury": "🪨",
+    "venus": "✨",
+    "mars": "🔴",
+    "jupiter": "🟤",
+    "saturn": "🪐",
+    "uranus": "🔵",
+    "neptune": "💙",
+    "eris": "❄️",
+    "pluto": "⚫",
+    "antares": "❤️",
+    "regulus": "💎",
+}
+
+# Planet name translations
+PLANET_TRANSLATIONS = {
+    "Mercury": "Merkurio",
+    "Venus": "Artizarra",
+    "Mars": "Marte",
+    "Jupiter": "Jupiter",
+    "Saturn": "Saturno",
+    "Uranus": "Urano",
+    "Neptune": "Neptuno",
+}
+
+
+def _translate_planets(title: str) -> str:
+    """Replace English planet names with Basque in a string."""
+    for eng, basq in PLANET_TRANSLATIONS.items():
+        title = title.replace(eng, basq)
+    return title
+
+
+# Basque time labels
+def _translate_time_label(time_label: str) -> str:
+    """Translate English time label to Basque."""
+    mapping = {
+        "past": "Gaur",
+        "today": "Gaur",
+        "tomorrow": "Biharko",
+        "1 days away": "Belerano",
+        "2 days away": "2 egunetan",
+        "3 days away": "3 egunetan",
+        "4 days away": "4 egunetan",
+        "5 days away": "5 egunetan",
+    }
+    return mapping.get(time_label, time_label)
+
+# Basque event type descriptions
+def _translate_event_type(event_type: str) -> str:
+    """Translate English event type to Basque."""
+    mapping = {
+        "eclipse": "Eclipsea",
+        "nova": "Supernoba/Novak",
+        "meteor_shower": "Meteor-ekasea",
+        "occultation": "Okultazioa",
+        "comet": "Kometa",
+        "planet_conjunction": "Planeta konjuntzioa",
+        "moon_conjunction": "Ilargi konjuntzioa",
+        "opposition": "Oposizioa",
+        "perihelion": "Perihelioa",
+    }
+    return mapping.get(event_type, event_type)
+
+# Basque visibility labels
+def _translate_visibility(vis_label: str) -> str:
+    """Translate English visibility label to Basque."""
+    mapping = {
+        "Naked eye": "Begi hutsez ikustekoa",
+        "Binoculars": "Binokularrekin",
+        "Small telescope": "Teleskopio txikiarekin",
+        "Medium telescope": "Teleskopio ertainarekin",
+        "Large telescope": "Teleskopio handiarekin",
+    }
+    return mapping.get(vis_label, vis_label)
+
+# Basque priority emoji and label with description
+def _get_priority_info(priority: int) -> tuple:
+    """Return (emoji, level_label, description) for given priority."""
+    mapping = {
+        1: ("🔴", "L1", "Lehentasun oso altua"),
+        2: ("🟠", "L2", "Lehentasun altua"),
+        3: ("🟡", "L3", "Lehentasun baxua"),
+        4: ("🔵", "L4", "Lehentasun oso baxua"),
+        5: ("⚪", "L5", "Informazioa"),
+    }
+    return mapping.get(priority, ("⚪", f"L{priority}", "Ezezaguna"))
+
+# Basque title translation helper - full sentence style
+def _translate_title(title: str) -> str:
+    """Translate English event titles to Basque in natural sentence style.
+
+    Converts titles like 'Comet C/2025 R3 (PANSTARRS) passes perihelion'
+    into 'C/2025 R3 (PANSTARRS) kometak perihelioa igaro du'.
+    """
+    # Full title translations
+    full_translations = {
+        "Close approach of the Moon and Jupiter": "Ilargiak eta Jupiterrek hurbilketa bat izan dute",
+        "Conjunction of the Moon and Jupiter": "Ilargia eta Jupiterren konjuntzioa",
+        "Lyrid meteor shower 2026": "Lyrid meteor-ekasearen gorena 2026",
+        "η-Lyrid meteor shower 2026": "η-Lyrid meteor-ekasearen gorena 2026",
+        "η-Aquariid meteor shower 2026": "η-Aquariideen meteoru-sakada 2026",
+        "π-Puppid meteor shower 2026": "π-Puppid meteor-ekasearen gorena 2026",
+        "136108 Haumea at opposition": "136108 Haumea oposizioan dago",
+        "Messier 101 is well placed": "M101 galaxia ondo kokatuta dago",
+    }
+
+    for eng, bas in full_translations.items():
+        if eng.lower() in title.lower():
+            return bas
+
+    # Pattern-based translations for comet perihelion events
+    import re
+
+    # First, strip date prefix: "19 Apr 2026 (Today): " or similar
+    cleaned = re.sub(r'^\d+\s+\w+\s+\d{4}\s+\([^)]*\):\s*', '', title)
+
+    # Match: "Comet C/2025 R3 (PANSTARRS) passes perihelion"
+    m = re.search(r'(?:Comet\s+)?(C/\d{4}\s+\w+\s*\([^)]*\))\s+passes\s+perihelion', cleaned, re.IGNORECASE)
+    if m:
+        comet_name = m.group(1).strip()
+        return _translate_planets(f"{comet_name} kometak perihelioa igaro du")
+
+    # Match: "Comet XXX passes perihelion" (no parentheses)
+    m = re.search(r'(?:Comet\s+)?([^\s]+)\s+passes\s+perihelion', cleaned, re.IGNORECASE)
+    if m:
+        comet_name = m.group(1).strip()
+        return _translate_planets(f"{comet_name} kometak perihelioa igaro du")
+
+    # Match: "XXX at opposition"
+    m = re.search(r'(.+)\s+at\s+opposition', title, re.IGNORECASE)
+    if m:
+        obj = m.group(1).strip()
+        return _translate_planets(f"{obj} oposizioan dago")
+
+    # Match: "XXX is well placed"
+    m = re.search(r'(.+)\s+is\s+well\s+placed', title, re.IGNORECASE)
+    if m:
+        obj = m.group(1).strip()
+        return _translate_planets(f"{obj} ondo kokatuta dago")
+
+    # If no translation found, clean up the title (remove date prefix)
+    result = cleaned
+
+    # Translate any remaining English planet names to Basque
+    result = _translate_planets(result)
+
+    return result
+
+
+# Event type display names in Basque
+EVENT_TYPE_DISPLAY = {
+    "eclipse": "Eclipsea",
+    "nova": "Supernoba/Novak",
+    "meteor_shower": "Meteor-ekasea",
+    "occultation": "Okultazioa",
+    "comet": "Kometa",
+    "planet_conjunction": "Konjuntzia planetarioa",
+    "conjunction": "Konjuntzia planetarioa",
+    "moon_conjunction": "Ilargi konjuntzioa",
+    "opposition": "Oposizioa",
+    "perihelion": "Perihelioa",
+}
+
+# Priority display in Basque
+PRIORITY_DISPLAY = {
+    1: "🔴 L1 — Lehentasun oso altua",
+    2: "🟠 L2 — Lehentasun altua",
+    3: "🟡 L3 — Lehentasun baxua",
+    4: "🔵 L4 — Lehentasun oso baxua",
+    5: "⚪ L5 — Informazioa",
+}
+
+# Visibility display in Basque (with level)
+VISIBILITY_DISPLAY = {
+    "Naked eye": "Begi hutsez ikustekoa",
+    "Binoculars recommended": "Binokularrekin gomendatua",
+    "Small telescope required (6+ inch)": "Teleskopio txikia behar da (6+ haztako)",
+    "Medium telescope required (8-10 inch)": "Teleskopio ertaina behar da (8-10 haztako)",
+    "Large telescope required (12+ inch)": "Teleskopio handia behar da (12+ haztako)",
+}
+
+VISIBILITY_LEVEL = {
+    "Naked eye": 1,
+    "Binoculars recommended": 2,
+    "Small telescope required (6+ inch)": 3,
+    "Medium telescope required (8-10 inch)": 4,
+    "Large telescope required (12+ inch)": 5,
+}
+
+
+def _get_time_label_basque(time_label: str) -> str:
+    """Get Basque time label with hours remaining."""
+    if time_label == "today":
+        return "Gaur — 9 ordu inguru geratzen dira"
+    elif time_label == "past":
+        return "Gaur"
+    elif "days away" in time_label:
+        days = time_label.split()[0]
+        return f"{days} egunetan"
+    return time_label
+
+
+def format_mastodon_status(event_data: dict) -> str:
+    """Format event data into a Mastodon-friendly Basque status message.
+
+    Format (user-specified):
+        🔵 Merkurioren eta Erisen konjuntzioa
+
+        📅 Data: 2026ko maiatzaren 2a
+        ⏰ Eguna gaur — 9 ordu inguru geratzen dira
+        🎯 Mota: Konjuntzia planetarioa
+        🔭 Behaketa-maila: 5/5 — Teleskopio handia behar da (12+ haztako)
+
+        📝 Azalpena:
+
+        Merkuriok eta 136199 Eris izarrak eskualde zuzen bera partekatuko dute...
+
+        🔗 Xehetasun gehiago: https://in-the-sky.org/news.php?id=...
+        🤖 ZERO espazio digitaletik
+
+    Args:
+        event_data: Dict with event information from notification
+
+    Returns:
+        Formatted string for Mastodon (max 500 chars)
+    """
+    priority = event_data.get("priority", 5)
+    time_label = event_data.get("time_label", "unknown")
+    title = event_data.get("title", "")
+    event_type = event_data.get("event_type", "unknown")
+
+    # Translate title to Basque (cleaned, no date prefix)
+    raw_basque_title = _translate_title(title)
+
+    # Strip any remaining date prefixes from translated titles
+    import re
+    basque_title = re.sub(r'^\d{4}ko\s+\w+ren\s+\d+(?:\s*a)?(?:\s*\([^)]*\))?:\s*', '', raw_basque_title)
+
+    # Get emoji for priority level
+    priority_emoji = {1: "🔴", 2: "🟠", 3: "🟡", 4: "🔵", 5: "⚪"}.get(priority, "⚪")
+
+    # Translate time label to Basque
+    if time_label == "today":
+        time_basque = "Gaur"
+    elif time_label == "past":
+        time_basque = "Gaur"
+    elif "days away" in time_label:
+        days = time_label.split()[0]
+        time_basque = f"{days} egunetan"
+    else:
+        time_basque = _translate_time_label(time_label)
+
+    # Translate event type to Basque (with fallback from title)
+    if event_type == "unknown":
+        # Try to infer from title keywords
+        title_lower = basque_title.lower()
+        if "meteor" in title_lower or "shower" in title_lower:
+            event_type_basque = "Meteor-ekasea"
+        elif "eclipse" in title_lower:
+            event_type_basque = "Eclipsea"
+        elif "comet" in title_lower or "komet" in title_lower:
+            event_type_basque = "Kometa"
+        else:
+            event_type_basque = "Gertaera"
+    else:
+        event_type_basque = EVENT_TYPE_DISPLAY.get(event_type, event_type)
+
+    # Build header line
+    lines = []
+    lines.append(f"{priority_emoji} {basque_title}")
+
+    # Technical details section
+    vis_label = event_data.get("visibility_label", "")
+    vis_level = VISIBILITY_LEVEL.get(vis_label, 5)
+    vis_display = VISIBILITY_DISPLAY.get(vis_label, "Ezezaguna") if vis_label else "Ezezaguna"
+
+    lines.append("")
+    lines.append(f"📅 Data: {event_data.get('event_date', '').split('T')[0]}")
+    lines.append(f"⏰ {time_basque}")
+    lines.append(f"🎯 Mota: {event_type_basque}")
+    lines.append(f"🔭 Behaketa-maila: {vis_level}/5 — {vis_display}")
+
+    # URL and signature (footer — always preserved)
+    url = event_data.get("event_page_url", "")
+    footer_lines = []
+    if url:
+        footer_lines.append(f"🔗 Xehetasun gehiago: {url}")
+    footer_lines.append("🤖 ZERO espazio digitaletik")
+    footer_text = "\n".join(footer_lines)
+
+    # Calculate available space for description
+    # Footer + blank line before it = ~10-60 chars depending on URL length
+    footer_with_blank = len("\n" + footer_text) + 1
+    header_and_meta = "\n".join(lines)
+    meta_len = len(header_and_meta)
+
+    # Description section (truncated to fit within 500 total, preserving footer)
+    rich_desc = event_data.get("rich_description", "")
+    if rich_desc:
+        lines.append("")
+        lines.append(f"📝 Azalpena:")
+        lines.append("")
+        # Reserve space for footer
+        available_for_desc = 500 - meta_len - len("\n" + "📝 Azalpena:\n") - footer_with_blank - 3  # -3 for "…"
+        if available_for_desc < 50:
+            available_for_desc = 50  # Minimum description
+        max_desc = int(available_for_desc)
+        if len(rich_desc) > max_desc:
+            rich_desc = rich_desc[:max_desc - 3] + "…"
+        lines.append(rich_desc)
+
+    result = "\n".join(lines)
+
+    # Append footer (always preserved)
+    result += "\n" + footer_text
+
+    # Final safety check — if still over 500, truncate description further and retry
+    while len(result) > 500:
+        # Find the description section and shrink it
+        desc_start = result.find('📝 Azalpena:')
+        if desc_start < 0:
+            break  # No description to cut
+        # Cut everything after "Azalpena:" header down to footer
+        before_desc = result[:desc_start]
+        after_header = result[result.find("\n", desc_start) + 1:]  # skip past "📝 Azalpena:\n"
+        # Find where description ends (next blank line or footer)
+        footer_pos = after_header.rfind(footer_lines[-1])
+        if footer_pos < 0:
+            break
+        desc_content = after_header[:after_header.find("\n", after_header.find("📡"))].strip() if "📡" in after_header else ""
+        # Just rebuild without description
+        result = before_desc + "\n" + footer_text
+        break  # One-shot: remove desc entirely if nothing fits
+
+    return result
+
+
+def _get_event_emoji(event_data: dict) -> str:
+    """Get the best emoji for an event based on type and title.
+
+    Falls back to title-based matching if event_type is unknown or generic.
+    """
+    event_type = event_data.get("event_type", "")
+    title = event_data.get("title", "").lower()
+
+    # First try event_type mapping
+    emoji = EVENT_TYPE_EMOJI.get(event_type)
+    if emoji and event_type != "unknown":
+        return emoji
+
+    # Fall back to title-based matching
+    for keyword, em in TITLE_EMOJI_MAP.items():
+        if keyword in title:
+            return em
+
+    # Default
+    return "🌟"
+
+
+def _clean_title(title: str) -> str:
+    """Clean up event title — remove date prefix and extra info.
+
+    Args:
+        title: Raw event title like '01 May 2026 (3 days away): Full Moon'
+
+    Returns:
+        Cleaned title like 'Full Moon'
+    """
+    import re
+    # Remove date prefix: "01 May 2026 (3 days away): "
+    cleaned = re.sub(r'^\d{1,2}\s+\w+\s+\d{4}\s*\([^)]*\)?:?\s*', '', title)
+    return cleaned.strip()
+
+
+def _translate_digest_title(title: str) -> str:
+    """Translate a cleaned event title to Basque for digest display.
+
+    Uses the same translation logic as format_mastodon_status but
+    returns only the short translated title (no date prefix).
+    """
+    # Full translations first
+    full_translations = {
+        "full moon": "Ilargi betea",
+        "new moon": "Ilargi berria",
+        "first quarter": "Lehen laurdena",
+        "last quarter": "Azken laurdena",
+        "lunar occultation of antares": "Antaresen ilargi okultazioa",
+        "the moon at apogee": "Ilargia apogeean",
+        "the moon at aphelion": "Ilargia afelian",
+        "conjunction of mercury and eris": "Merkurio eta Erisren konjuntzioa",
+        "η-aquariid meteor shower 2026": "η-Aquariidak meteor-ekasea 2026",
+    }
+
+    lower = title.lower()
+    for eng, bas in full_translations.items():
+        if eng == lower:
+            return bas
+
+    # Pattern-based: conjunction of X and Y
+    import re
+    m = re.search(r'conjunction of (.+?) and (.+)', lower)
+    if m:
+        planet1 = _translate_planets(m.group(1).title())
+        planet2 = _translate_planets(m.group(2).title())
+        return f"{planet1} eta {planet2}ren konjuntzioa"
+
+    # Pattern-based: lunar occultation of X
+    m = re.search(r'lunar occultation of (.+)', lower)
+    if m:
+        star = _translate_planets(m.group(1).title())
+        return f"{star}ren ilargi okultazioa"
+
+    # Pattern-based: the moon at X
+    m = re.search(r'the moon at (.+)', lower)
+    if m:
+        pos = _translate_planets(m.group(1).title())
+        return f"Ilargia {pos}"
+
+    # Pattern-based: meteor shower
+    m = re.search(r'(.+) meteor shower', lower)
+    if m:
+        shower = m.group(1).strip()
+        return f"{shower} meteor-ekasea"
+
+    # Default: return cleaned title as-is (already cleaned by _clean_title)
+    return title
+
+
+def format_mastodon_digest(events: list[dict]) -> str:
+    """Format a digest of events into Basque for Mastodon.
+
+    Rich format — each event on its own line with proper emoji, short date,
+    and optional rich description snippet (translated or original).
+    Fits within 500 chars by limiting to ~6 events.
+
+    Args:
+        events: List of event dicts from notification
+
+    Returns:
+        Formatted digest string in Basque (max 500 chars)
+    """
+    lines = [f"📅 Astronomia Laburpena"]
+
+    for evt in events[:6]:  # Limit to first 6 for Mastodon
+        emoji = _get_event_emoji(evt)
+        raw_title = _clean_title(evt.get("title", ""))
+        time_label = evt.get("time_label", "")
+
+        # Translate title to Basque
+        basq_title = _translate_digest_title(raw_title)
+
+        # Short date label
+        if time_label == "past":
+            date_str = "Gaur"
+        elif "days away" in time_label:
+            days = time_label.split()[0]
+            date_str = f"+{days}d"
+        else:
+            date_str = time_label
+
+        # Truncate title to ~35 chars
+        if len(basq_title) > 35:
+            basq_title = basq_title[:32] + "…"
+
+        line = f"{emoji} {date_str}: {basq_title}"
+
+        # Add rich description snippet (translated or original) — max 40 chars
+        rich_desc = evt.get("rich_description", "")
+        if rich_desc:
+            snippet = rich_desc[:40]
+            if len(rich_desc) > 40:
+                snippet += "…"
+            line += f" | 📝{snippet}"
+
+        lines.append(line)
+
+    result = "\n".join(lines)
+
+    # Hard truncate to 500 if needed (Mastodon limit)
+    if len(result) > 500:
+        cutoff = result[:497]
+        last_newline = cutoff.rfind("\n")
+        if last_newline > 100:
+            cutoff = result[:last_newline].rstrip()
+        result = cutoff + "…"
+
+    return result
