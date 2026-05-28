@@ -625,48 +625,32 @@ def global_batch_translate(
         rich_descriptions.append(rd)
         viewing_infos.append(vi)
 
-    # ── Phase 2: Translate each field type in ONE batch call ───────────
-    results = []
+    # ── Phase 2: Translate each field type in ONE batch call (sequential) ────
+    # Note: LM Studio processes one request at a time, so parallel would not
+    # speed things up — it would just queue requests. Sequential is fine.
 
-    # Batch-translate all titles
-    translated_titles = translate_batch(titles, target_lang, config, field_type="title")
-
-    # Batch-translate all descriptions (only if any are non-empty)
     has_any_desc = any(d.strip() for d in descriptions)
-    if has_any_desc:
-        translated_descs = translate_batch(descriptions, target_lang, config, field_type="description")
-    else:
-        translated_descs = [""] * len(events)
+    translated_descs = translate_batch(descriptions, target_lang, config, field_type="description") if has_any_desc else [""] * len(events)
 
-    # Batch-translate all rich_descriptions (only if any are non-empty)
     has_any_rd = any(rd.strip() for rd in rich_descriptions)
-    if has_any_rd:
-        translated_rds = translate_batch(rich_descriptions, target_lang, config, field_type="rich_description")
-    else:
-        translated_rds = [""] * len(events)
+    translated_rds = translate_batch(rich_descriptions, target_lang, config, field_type="rich_description") if has_any_rd else [""] * len(events)
 
-    # Batch-translate all viewing_infos (only if any are non-empty)
     has_any_vi = any(vi.strip() for vi in viewing_infos)
-    if has_any_vi:
-        translated_vis = translate_batch(viewing_infos, target_lang, config, field_type="viewing_info")
-    else:
-        translated_vis = [""] * len(events)
+    translated_vis = translate_batch(viewing_infos, target_lang, config, field_type="viewing_info") if has_any_vi else [""] * len(events)
 
     # ── Phase 3: Distribute results back to each event ─────────────────
+    results = []
     for i in range(len(events)):
-        rd_idx = i if has_any_rd else None
-        vi_idx = i if has_any_vi else None
-
         result = {
             "translated_title": translated_titles[i] if i < len(translated_titles) else titles[i],
             "translated_description": (
                 translated_descs[i] if i < len(translated_descs) and descriptions[i].strip() else ""
             ),
             "translated_rich_description": (
-                translated_rds[rd_idx] if rd_idx is not None and rd_idx < len(translated_rds) else ""
+                translated_rds[i] if i < len(translated_rds) and rich_descriptions[i].strip() else ""
             ),
             "translated_viewing_info": (
-                translated_vis[vi_idx] if vi_idx is not None and vi_idx < len(translated_vis) else ""
+                translated_vis[i] if i < len(translated_vis) and viewing_infos[i].strip() else ""
             ),
         }
         results.append(result)
