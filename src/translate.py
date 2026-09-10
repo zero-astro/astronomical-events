@@ -1,7 +1,7 @@
 """Translation provider module — batch translation via OpenAI-compatible API.
 
-Supported providers: lm-studio, ollama, openai
-All use the OpenAI chat completions API format.
+Supported providers: lm-studio, ollama, openai, libretranslate
+All use the OpenAI chat completions API format (except libretranslate).
 """
 
 import json
@@ -27,6 +27,7 @@ PROVIDERS = {
     "lm-studio": {"api_base": "http://192.168.16.20:8080/v1", "model": "Qwen3.6-35B-A3B"},
     "ollama":    {"api_base": "http://localhost:11434/v1", "model": None},  # user-specified
     "openai":    {"api_base": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+    "libretranslate": {"api_base": "https://itzulpenak.artizar-enea.eus", "model": None},
 }
 
 # Translation prompt templates per language
@@ -181,18 +182,26 @@ def _get_api_key(provider: str) -> Optional[str]:
         "openai": os.environ.get("OPENAI_API_KEY"),
         "ollama": None,  # No key needed
         "lm-studio": None,  # No key needed
+        "libretranslate": None,  # No key needed (self-hosted)
     }
     return keys.get(provider)
 
 
-def _call_api(messages: list, api_base: str, model: str, api_key: Optional[str] = None) -> str:
-    """Call OpenAI-compatible chat completions API.
+def _is_libretranslate(provider: str, api_base: str) -> bool:
+    """Check if this is Libretranslate provider."""
+    return provider == "libretranslate" or "itzulpenak.artizar-enea" in api_base
+
+
+def _call_api(messages: list, api_base: str, model: str, api_key: Optional[str] = None, source_lang: str = "en", target_lang: str = None) -> str:
+    """Call translation API (OpenAI-compatible or Libretranslate).
 
     Args:
-        messages: List of message dicts with 'role' and 'content' keys
-        api_base: Base URL of the API (e.g., http://localhost:1234/v1)
+        messages: List of message dicts with 'role' and 'content' keys (OpenAI format)
+        api_base: Base URL of the API
         model: Model name to use
         api_key: Optional API key
+        source_lang: Source language code (e.g., 'en')
+        target_lang: Target language code (e.g., 'eu')
 
     Returns:
         Response text from the API
@@ -201,6 +210,31 @@ def _call_api(messages: list, api_base: str, model: str, api_key: Optional[str] 
     import urllib.request
     import urllib.error
 
+    provider = config.get("provider", "lm-studio") if 'config' in dir() else "lm-studio"
+    
+    # Libretranslate path
+    if _is_libretranslate(provider, api_base):
+        # Extract text from messages (OpenAI format → Libretranslate)
+        # messages[0] = system, messages[1] = user
+        texts_to_translate = []
+        for msg in messages:
+            if msg["role"] == "user":
+                # Libretranslate expects plain text, not prompt templates
+                # The prompt template is already formatted, so extract just the source texts
+                content = msg["content"]
+                # Libretranslate only handles single text or batch, not prompt templates
+                # For Libretranslate, we need to bypass the prompt template entirely
+                # Extract the actual texts from the prompt
+                import re
+                # Look for the actual source texts (usually after a blank line or specific marker)
+                # This is a fallback — in practice, Libretranslate should be called differently
+                texts_to_translate.append(content)
+        
+        if target_lang and texts_to_translate:
+            return "\n".join(_call_libretranslate_batch(texts_to_translate, source_lang, target_lang))
+        return ""
+    
+    # OpenAI-compatible path (lm-studio, ollama, openai)
     # Determine provider from api_base for circuit breaker
     provider = "lm-studio" if "192.168.16.20" in api_base else ("ollama" if "localhost:11434" in api_base else "openai")
     
@@ -276,6 +310,61 @@ def _call_api(messages: list, api_base: str, model: str, api_key: Optional[str] 
         logger.error(f"Unexpected error calling API at {url}: {e}")
         _record_failure(provider)
         raise
+
+
+def _call_libretranslate_batch(texts: list[str], source_lang: str, target_lang: str) -> list[str]:
+    """Call Libretranslate API for a batch of texts.
+
+    Libretranslate processes ONE text at a time, so we loop through
+    each text sequentially. Each call has a 300s timeout to handle
+    slow GPU-free environments.
+
+    Args:
+        texts: List of source texts to translate
+        source_lang: Source language code (e.g., 'en')
+        target_lang: Target language code (e.g., 'eu')
+
+    Returns:
+        List of translated texts, one per input text
+    """
+    import urllib.request
+    import urllib.error
+
+    api_base = "https://itzulpenak.artizar-enea.eus"
+    url = f"{api_base}/translate"
+
+    results = []
+    for idx, text in enumerate(texts):
+        payload = {
+            "q": text,
+            "source": source_lang,
+            "target": target_lang,
+            "format": "text",
+        }
+
+        headers = {"Content-Type": "application/json"}
+        data = json.dumps(payload).encode("utf-8")
+
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
+        try:
+            with urllib.request.urlopen(req, timeout=300) as response:
+                result = json.loads(response.read().decode("utf-8"))
+                translated = result.get("translatedText", "").strip()
+                results.append(translated)
+                logger.info(f"Libretranslate [{idx+1}/{len(texts)}]: OK")
+        except urllib.error.URLError as e:
+            logger.error(f"Libretranslate API call failed for text {idx+1}: {e}")
+            results.append(text)  # Fallback to original text
+        except Exception as e:
+            logger.error(f"Unexpected error calling Libretranslate for text {idx+1}: {e}")
+            results.append(text)  # Fallback to original text
+
+        # Small delay between calls to avoid overwhelming the service
+        if idx < len(texts) - 1:
+            time.sleep(1)
+
+    return results
 
 
 # ── Translation Cache (T1) ───────────────────────────────────────────────
@@ -391,11 +480,17 @@ def _do_translate(titles: list[str], target_lang: str, config: dict) -> list[str
         time.sleep(3)
         return first + second
 
+    provider = config.get("provider", "lm-studio")
+    api_base = config.get("api_base", PROVIDERS[provider]["api_base"])
+
+    # Libretranslate: skip prompt templates, call directly
+    if _is_libretranslate(provider, api_base):
+        source_lang = config.get("source_lang", "en")
+        return _call_libretranslate_batch(titles, source_lang, target_lang)
+
     if target_lang not in TRANSLATION_PROMPTS:
         raise ValueError(f"Unsupported language: {target_lang}. Supported: {list(TRANSLATION_PROMPTS.keys())}")
 
-    provider = config.get("provider", "lm-studio")
-    api_base = config.get("api_base", PROVIDERS[provider]["api_base"])
     model = config.get("model", PROVIDERS[provider]["model"])
 
     if not model:

@@ -164,6 +164,24 @@ python3 scripts/translate_all_fields.py --dry-run
 python3 scripts/translate_all_fields.py
 ```
 
+### ⚠ Critical: Sync translations AFTER every translate run
+
+**User preference:** Always use the provided Python helper scripts — never run raw SQL for DB operations. Scripts are idempotent, versioned, and maintainable.
+
+```bash
+# After any `translate --lang eu` run:
+.venv/bin/python scripts/sync_translations.py --lang eu
+```
+
+**Why this matters:** `translate_event()` writes to the `translations` table only. The `events` table has parallel `translated_*` columns (`translated_title`, `translated_description`, etc.) that remain EMPTY after translation. If you query `events` without syncing first, you will see empty `translated_*` fields — this is the #1 cause of "translations are missing" false reports.
+
+**Verify after sync:**
+```bash
+.venv/bin/python scripts/verify_translations.py --lang eu
+```
+
+> **User correction:** User reported "You said everything was translated but it isn't." The fix: sync step was missing. Always sync, then verify.
+
 ## Scheduling & Automation (Phase 4)
 
 The skill includes a built-in scheduler daemon for fully automated operation.
