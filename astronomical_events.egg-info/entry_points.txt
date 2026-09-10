@@ -1,0 +1,2 @@
+[console_scripts]
+astronomical-events = scripts.main:cli

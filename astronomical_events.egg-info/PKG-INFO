@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: astronomical-events
+Version: 0.1.0
+Summary: Astronomical events notification from in-the-sky.org RSS feed
+Requires-Python: >=3.12
+Requires-Dist: feedparser>=6.0.0
+Requires-Dist: python-telegram-bot>=20.0
+Requires-Dist: beautifulsoup4>=4.12.0
+Requires-Dist: lxml>=5.0.0
+Requires-Dist: apscheduler>=3.10.0
+Requires-Dist: pydantic-settings>=2.0.0

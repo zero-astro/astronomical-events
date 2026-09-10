@@ -85,15 +85,14 @@ def translate_missing_events(db, provider_config: dict) -> dict:
         lang_results = {"translated": 0, "skipped": 0, "failed": 0}
 
         try:
-            from translate import global_batch_translate, TranslationError
+            from translate import translate_event, TranslationError
 
-            # Global batch: ONE call per field type for ALL events
-            batch_results = global_batch_translate(events, lang, provider_config)
+            # Per-event: ONE call per event (guarantees correct mapping)
+            for idx, event in enumerate(events):
+                result = translate_event(event, provider_config, lang)
 
-            # Distribute results back to each event and store in DB
-            for idx, result in enumerate(batch_results):
                 if result is None:
-                    logger.error(f"Translation returned None for {events[idx].news_id}")
+                    logger.error(f"Translation failed for {event.news_id}")
                     lang_results["failed"] += 1
                     total_failed += 1
                     continue
@@ -104,7 +103,7 @@ def translate_missing_events(db, provider_config: dict) -> dict:
 
                 if not title:
                     logger.error(
-                        f"Empty translated title for {events[idx].news_id} — skipping storage"
+                        f"Empty translated title for {event.news_id} — skipping storage"
                     )
                     lang_results["skipped"] += 1
                     total_skipped += 1
@@ -112,10 +111,10 @@ def translate_missing_events(db, provider_config: dict) -> dict:
 
                 # Store translation
                 db.insert_or_update_translation(
-                    news_id=events[idx].news_id,
+                    news_id=event.news_id,
                     target_lang=lang,
                     translated_title=result.get("translated_title", ""),
-                    translated_description=result.get("translated_description", ""),
+                    translated_description=desc,
                     provider=provider_config["provider"],
                     translated_rich_description=result.get("translated_rich_description", ""),
                     translated_viewing_info=result.get("translated_viewing_info", "")
@@ -123,9 +122,9 @@ def translate_missing_events(db, provider_config: dict) -> dict:
 
                 lang_results["translated"] += 1
                 total_translated += 1
-                logger.info(f"✓ Translated {events[idx].news_id} to {lang}")
+                logger.info(f"✓ Translated {event.news_id} to {lang}")
 
-            # Update checkpoint: all events processed in one batch call
+            # Update checkpoint: all events processed
             db.update_checkpoint(lang, start_idx + num_events)
 
         except TranslationError as e:

@@ -24,7 +24,7 @@ circuit_breaker_file = os.path.join(os.path.dirname(__file__), "..", "data", "ci
 
 # Default provider configurations
 PROVIDERS = {
-    "lm-studio": {"api_base": "http://192.168.16.20:1234/v1", "model": "qwen3.6-35b-a3b"},
+    "lm-studio": {"api_base": "http://192.168.16.20:8080/v1", "model": "Qwen3.6-35B-A3B"},
     "ollama":    {"api_base": "http://localhost:11434/v1", "model": None},  # user-specified
     "openai":    {"api_base": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
 }
@@ -74,7 +74,7 @@ def is_lm_studio_available() -> bool:
     import urllib.request
     try:
         req = urllib.request.Request(
-            "http://192.168.16.20:1234/api/health",
+            "http://192.168.16.20:8080/health",
             method="GET"
         )
         with urllib.request.urlopen(req, timeout=5) as response:
@@ -628,6 +628,9 @@ def global_batch_translate(
     # ── Phase 2: Translate each field type in ONE batch call (sequential) ────
     # Note: LM Studio processes one request at a time, so parallel would not
     # speed things up — it would just queue requests. Sequential is fine.
+
+    has_any_title = any(t.strip() for t in titles)
+    translated_titles = translate_batch(titles, target_lang, config, field_type="title") if has_any_title else [t for t in titles]
 
     has_any_desc = any(d.strip() for d in descriptions)
     translated_descs = translate_batch(descriptions, target_lang, config, field_type="description") if has_any_desc else [""] * len(events)

@@ -130,7 +130,7 @@ class DatabaseManager:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS fetch_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                fetched_at DATETIME DEFAULT (datetime('now')),
                 items_fetched INTEGER DEFAULT 0,
                 new_items INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'unknown',
@@ -436,12 +436,14 @@ class DatabaseManager:
             status: success/partial/failed
             error_message: Error details if failed
         """
+        import sqlite3 as _sqlite3
+        from datetime import datetime as _dt
         cursor = self.conn.cursor()
         try:
             cursor.execute("""
-                INSERT INTO fetch_log (items_fetched, new_items, status, error_message)
-                VALUES (?, ?, ?, ?)
-            """, (items_fetched, new_items, status, error_message))
+                INSERT INTO fetch_log (fetched_at, items_fetched, new_items, status, error_message)
+                VALUES (?, ?, ?, ?, ?)
+            """, (_dt.now().isoformat(), items_fetched, new_items, status, error_message))
             self.conn.commit()
         except Exception as e:
             logger.error(f"Failed to log fetch: {e}")

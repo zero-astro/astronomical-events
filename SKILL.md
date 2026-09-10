@@ -1,11 +1,6 @@
 ---
 name: astronomical-events
-description: >-
-  Fetch and notify about important astronomical events from in-the-sky.org.
-  Periodically checks RSS feed, stores events in SQLite, classifies by priority,
-  and outputs structured notifications for OpenClaw to route through any channel.
-  Supports Basque i18n translations and Mastodon posting.
-  Use when the user wants to track sky events or receive astronomical alerts.
+description: Track astronomical events. Fetch RSS, translate to Basque.
 ---
 
 # Astronomical Events Notification Skill
@@ -20,7 +15,28 @@ Fetches astronomical news from in-the-sky.org RSS feed, stores them in SQLite, c
 
 This skill ships with a `pyproject.toml` but **no pre-installed venv**. On first use:
 
-```bash\ncd /home/urtzai/.hermes/skills/astronomical-events\npython3 -m venv .venv\nsource .venv/bin/activate\npip install -e .   # installs feedparser, beautifulsoup4, lxml, apscheduler, pydantic-settings\n```\n\nAll subsequent commands must use the venv:\n```bash\n.venv/bin/python scripts/main.py fetch\n```\n\n> **Note:** System `pip` may not be available (no root/apt access). Always use `.venv`.\n\n### Mastodon posting dependency\n\nMastodon posting requires `mastodon.py`, which is NOT in the base install:\n```bash\ncd /home/urtzai/.hermes/skills/astronomical-events && .venv/bin/pip install mastodon.py\n```\n\n> **Note:** The skill's `pyproject.toml` does not include `mastodon.py`. Install it separately when you need Mastodon posting.
+```bash
+cd /home/urtzai/.hermes/skills/astronomical-events
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .   # installs feedparser, beautifulsoup4, lxml, apscheduler, pydantic-settings
+```
+
+All subsequent commands must use the venv:
+```bash
+.venv/bin/python scripts/main.py fetch
+```
+
+> **Note:** System `pip` may not be available (no root/apt access). Always use `.venv`.
+
+### Mastodon posting dependency
+
+Mastodon posting requires `mastodon.py`, which is NOT in the base install:
+```bash
+cd /home/urtzai/.hermes/skills/astronomical-events && .venv/bin/pip install mastodon.py
+```
+
+> **Note:** The skill's `pyproject.toml` does not include `mastodon.py`. Install it separately when you need Mastodon posting.
 
 ## Usage
 
@@ -303,6 +319,14 @@ TRANSLATION_MODEL=your-model-name
 OPENAI_API_KEY=sk-...         # for openai provider
 ```
 
+## Web Scraping Pitfalls
+
+| Issue | Fix |
+|-------|-----|
+| `in-the-sky.org` Anubis bot-detect blocks all scraping | `/news.php?id=` pages are behind Anubis Proof-of-Work challenge. `web_extract`, `urllib`, browser tool ALL get blocked with "Making sure you're not a bot!" page. RSS feed (`in-the-sky.org/dfan.rss`) works fine. Never rely on scraping individual news pages from this domain. |
+| Web scraping blocked → content fields empty | When `rich_description_en` and `viewing_info_en` need filling but scraping is blocked, use llama.cpp to GENERATE them from RSS title + description. Build a prompt with event data and ask the LLM to produce detailed paragraphs. Save as JSON, then UPDATE the DB. |
+| LLM generation prompt pattern | Build a prompt listing all events with their RSS data (title + description), ask for a JSON array with `rich_description_en` (3-5 sentence detailed explanation) and `viewing_info_en` (practical observing details). Use temperature 0.3, max_tokens 8000. Extract JSON from response with regex `\[.*\]`. |
+
 ## Pitfalls & Known Issues
 
 | Issue | Fix |
@@ -314,7 +338,8 @@ OPENAI_API_KEY=sk-...         # for openai provider
 | LM Studio health check fails → circuit breaker opens | The translator checks `http://192.168.16.20:1234/api/health` before translating. If the local LLM isn't running, translations are skipped. Start LM Studio first. |
 | `translate --lang eu` times out mid-run | Long translation runs can exceed the 600s timeout, leaving some events untranslated. The script is idempotent — just re-run `.venv/bin/python scripts/main.py translate --lang eu`; it only processes missing events. Check progress with `status` between runs. |
 | Translation cache stale (wrong translations) | If you changed the translation prompt or model, old cached results may be inaccurate. Clear cache first: see "Translation Cache" section above. |
-|| Manual `translate_single_event()` API changed | Module-level functions in `src/translator.py` expect an object with `.news_id`, `.title`, `.description` attributes (not a dict). Use the CLI instead of hand-calling module internals — the CLI handles the object construction correctly. || LM Studio is single-request only — never use `ThreadPoolExecutor` or async for translation calls | LM Studio processes one request at a time. Parallelizing translation requests (`global_batch_translate`, `translate_all_fields.py`) will NOT speed things up — it just queues them sequentially with extra overhead. Always run translations sequentially. If you switch to OpenAI API or Ollama with `--parallel`, re-enable parallelism then. |
+| Manual `translate_single_event()` API changed | Module-level functions in `src/translator.py` expect an object with `.news_id`, `.title`, `.description` attributes (not a dict). Use the CLI instead of hand-calling module internals — the CLI handles the object construction correctly. |
+| LM Studio is single-request only — never use `ThreadPoolExecutor` or async for translation calls | LM Studio processes one request at a time. Parallelizing translation requests (`global_batch_translate`, `translate_all_fields.py`) will NOT speed things up — it just queues them sequentially with extra overhead. Always run translations sequentially. If you switch to OpenAI API or Ollama with `--parallel`, re-enable parallelism then. |
 
 ## References
 

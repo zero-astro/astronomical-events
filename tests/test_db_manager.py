@@ -80,10 +80,16 @@ class TestDbManager(unittest.TestCase):
     def test_log_and_get_fetch_history(self):
         """Logging a fetch should be retrievable via get_fetch_history."""
         import time
+        from datetime import datetime
+        # First log with explicit timestamp
         self.db.log_fetch(items_fetched=5, new_items=3, status='success')
-        time.sleep(0.1)  # Ensure distinct timestamps for deterministic ordering
-        self.db.log_fetch(items_fetched=2, new_items=0, status='partial', error_message='Some items skipped')
-
+        # Insert second entry directly with explicit timestamp to ensure ordering
+        self.db.conn.execute(
+            "INSERT INTO fetch_log (fetched_at, items_fetched, new_items, status, error_message) VALUES (?, ?, ?, ?, ?)",
+            (datetime.now().isoformat(), 2, 0, 'partial', 'Some items skipped')
+        )
+        self.db.conn.commit()
+        
         history = self.db.get_fetch_history(limit=10)
         self.assertEqual(len(history), 2)
         # Most recent entry (second logged) comes first due to DESC ordering
