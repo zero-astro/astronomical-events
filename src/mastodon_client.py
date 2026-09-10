@@ -18,19 +18,19 @@ def load_mastodon_config() -> dict:
     # Resolve workspace path: env var > relative to skill dir
     ws = os.environ.get("OPENCLAW_WORKSPACE_DIR", "")
     if not ws:
-        # Skill is at ~/.openclaw/workspace/skills/astronomical-events/
+        # Skill is at ~/.hermes/skills/astronomical-events/src/
         skill_dir = Path(__file__).resolve().parent.parent
-        # Walk up: src -> astronomical-events -> skills -> workspace
-        candidate = str(skill_dir / "../../.." / "config")
-        ws_candidate = str(Path(candidate).parents[0])
-        config_path_check = Path(ws_candidate) / "config" / "mastodon.json"
-        if config_path_check.exists():
-            ws = ws_candidate
+        # config/mastodon.json is in the skill root (same as src/)
+        candidate = str(skill_dir / "config")
+        if Path(candidate).exists():
+            # ws IS the config directory
+            config_path = Path(candidate) / "mastodon.json"
         else:
             # Fallback: try parent of skills directory
             ws = str(skill_dir.parent.parent)
-    config_path = Path(ws) / "config" / "mastodon.json"
-    config_path = Path(ws) / "config" / "mastodon.json"
+            config_path = Path(ws) / "config" / "mastodon.json"
+    else:
+        config_path = Path(ws) / "config" / "mastodon.json"
 
     if not config_path.exists():
         logger.warning("Mastodon config not found at %s", config_path)
