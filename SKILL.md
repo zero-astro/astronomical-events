@@ -278,39 +278,12 @@ python3 scripts/translate_all_fields.py            # Apply changes
 ### Full Translation Workflow (Reproducible, Zero Effort)
 
 **Step 1 — Sync translations to events table (ALWAYS first):**
-Before reading translations from the `events` table, sync `translations` → `events`:
+After `translate --lang eu`, translations live in the `translations` table. The `events` table has parallel `translated_*` columns that remain empty. Use the sync script:
 ```bash
 cd /home/urtzai/.hermes/skills/astronomical-events
-.venv/bin/python -c "
-import sqlite3
-conn = sqlite3.connect('data/events.db')
-conn.execute('''
-    UPDATE events SET
-        translated_title = COALESCE(
-            (SELECT t.translated_title FROM translations t WHERE t.news_id = events.news_id AND t.target_lang = 'eu' AND t.translated_title != ''),
-            translated_title
-        ),
-        translated_description = COALESCE(
-            (SELECT t.translated_description FROM translations t WHERE t.news_id = events.news_id AND t.target_lang = 'eu' AND t.translated_description != ''),
-            translated_description
-        ),
-        translated_rich_description = COALESCE(
-            (SELECT t.translated_rich_description FROM translations t WHERE t.news_id = events.news_id AND t.target_lang = 'eu' AND t.translated_rich_description != ''),
-            translated_rich_description
-        ),
-        translated_viewing_info = COALESCE(
-            (SELECT t.translated_viewing_info FROM translations t WHERE t.news_id = events.news_id AND t.target_lang = 'eu' AND t.translated_viewing_info != ''),
-            translated_viewing_info
-        )
-    WHERE news_id IN (SELECT news_id FROM translations WHERE target_lang = 'eu')
-''')
-conn.commit()
-conn.close()
-print('Sync complete')
-"
+.venv/bin/python scripts/sync_translations.py --lang eu
 ```
-
-**⚠ Critical pitfall:** `translate_event()` writes to the `translations` table only. The `events` table has parallel `translated_*` columns that remain empty after translation. **Always run the sync above before querying translated data from the events table.**
+**⚠ Critical pitfall:** `translate_event()` writes to the `translations` table only. **Always run the sync above before querying translated data from the events table.**
 
 **Step 2 — Translate missing events (per-event mode):**
 ```bash
@@ -347,24 +320,14 @@ print(f'{len(events)} events prepared')
 
 **Step 4 — Sync again (if translation modified events columns):**
 ```bash
-# Re-run the sync from Step 1 if needed
+# Re-run sync script if needed
+.venv/bin/python scripts/sync_translations.py --lang eu
 ```
 
-**Step 5 — Verify:**
+**Step 5 — Verify all fields are populated:**
 ```bash
 cd /home/urtzai/.hermes/skills/astronomical-events
-.venv/bin/python -c "
-import sqlite3
-conn = sqlite3.connect('data/events.db')
-conn.row_factory = sqlite3.Row
-cur = conn.cursor()
-cur.execute('SELECT news_id, translated_title, translated_description, translated_rich_description, translated_viewing_info FROM events WHERE translated_title IS NOT NULL OR translated_description IS NOT NULL')
-rows = cur.fetchall()
-conn.close()
-print(f'{len(rows)} events with translations')
-for r in rows:
-    print(f\"  {r['news_id']}: title={'✓' if r['translated_title'] else '✗'}, desc={'✓' if r['translated_description'] else '✗'}, rich={'✓' if r['translated_rich_description'] else '✗'}, viewing={'✓' if r['translated_viewing_info'] else '✗'}\")
-"
+.venv/bin/python scripts/verify_translations.py --lang eu
 ```
 
 ### Translation Cache (T1) — Skip API for unchanged content
