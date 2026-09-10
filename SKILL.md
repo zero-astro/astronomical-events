@@ -275,6 +275,98 @@ python3 scripts/translate_all_fields.py --dry-run  # Preview first
 python3 scripts/translate_all_fields.py            # Apply changes
 ```
 
+### Full Translation Workflow (Reproducible, Zero Effort)
+
+**Step 1 — Sync translations to events table (ALWAYS first):**
+Before reading translations from the `events` table, sync `translations` → `events`:
+```bash
+cd /home/urtzai/.hermes/skills/astronomical-events
+.venv/bin/python -c "
+import sqlite3
+conn = sqlite3.connect('data/events.db')
+conn.execute('''
+    UPDATE events SET
+        translated_title = COALESCE(
+            (SELECT t.translated_title FROM translations t WHERE t.news_id = events.news_id AND t.target_lang = 'eu' AND t.translated_title != ''),
+            translated_title
+        ),
+        translated_description = COALESCE(
+            (SELECT t.translated_description FROM translations t WHERE t.news_id = events.news_id AND t.target_lang = 'eu' AND t.translated_description != ''),
+            translated_description
+        ),
+        translated_rich_description = COALESCE(
+            (SELECT t.translated_rich_description FROM translations t WHERE t.news_id = events.news_id AND t.target_lang = 'eu' AND t.translated_rich_description != ''),
+            translated_rich_description
+        ),
+        translated_viewing_info = COALESCE(
+            (SELECT t.translated_viewing_info FROM translations t WHERE t.news_id = events.news_id AND t.target_lang = 'eu' AND t.translated_viewing_info != ''),
+            translated_viewing_info
+        )
+    WHERE news_id IN (SELECT news_id FROM translations WHERE target_lang = 'eu')
+''')
+conn.commit()
+conn.close()
+print('Sync complete')
+"
+```
+
+**⚠ Critical pitfall:** `translate_event()` writes to the `translations` table only. The `events` table has parallel `translated_*` columns that remain empty after translation. **Always run the sync above before querying translated data from the events table.**
+
+**Step 2 — Translate missing events (per-event mode):**
+```bash
+cd /home/urtzai/.hermes/skills/astronomical-events
+.venv/bin/python scripts/main.py translate --lang eu
+```
+- Uses `src/translator.py` `translate_missing_events()` → per-event loop (one LLM call per event, no mixing)
+- llama.cpp at `http://192.168.16.20:8080/v1` (LM Studio), no access token needed
+- Translates: `title`, `description`, `rich_description_en`, `viewing_info_en` → Basque
+- Sequential mode (5s delay between requests to avoid LM Studio CPU timeouts)
+- Idempotent: only processes missing events
+
+**Step 3 — Generate rich_description_en & viewing_info_en (LLM, not scraping):**
+in-the-sky.org blocks all web scraping (Anubis bot-detect). Use LLM to generate these fields from RSS data:
+```bash
+cd /home/urtzai/.hermes/skills/astronomical-events
+# Prepare input JSON (RSS title + description only)
+.venv/bin/python -c "
+import sqlite3, json
+conn = sqlite3.connect('data/events.db')
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+cur.execute('SELECT news_id, title, description FROM events ORDER BY event_date DESC')
+events = [dict(r) for r in cur.fetchall()]
+conn.close()
+with open('data/events_for_gen.json', 'w') as f:
+    json.dump(events, f, indent=2)
+print(f'{len(events)} events prepared')
+"
+
+# Generate rich_description_en + viewing_info_en via LLM
+.venv/bin/python src/translate.py --generate --lang eu
+```
+
+**Step 4 — Sync again (if translation modified events columns):**
+```bash
+# Re-run the sync from Step 1 if needed
+```
+
+**Step 5 — Verify:**
+```bash
+cd /home/urtzai/.hermes/skills/astronomical-events
+.venv/bin/python -c "
+import sqlite3
+conn = sqlite3.connect('data/events.db')
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+cur.execute('SELECT news_id, translated_title, translated_description, translated_rich_description, translated_viewing_info FROM events WHERE translated_title IS NOT NULL OR translated_description IS NOT NULL')
+rows = cur.fetchall()
+conn.close()
+print(f'{len(rows)} events with translations')
+for r in rows:
+    print(f\"  {r['news_id']}: title={'✓' if r['translated_title'] else '✗'}, desc={'✓' if r['translated_description'] else '✗'}, rich={'✓' if r['translated_rich_description'] else '✗'}, viewing={'✓' if r['translated_viewing_info'] else '✗'}\")
+"
+```
+
 ### Translation Cache (T1) — Skip API for unchanged content
 
 Translations are cached in SQLite (`translation_cache` table). On re-runs, the system checks the cache before calling the LLM API. If a source text was already translated to the target language and field type, it's served from cache instantly.
