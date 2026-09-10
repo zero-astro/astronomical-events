@@ -372,15 +372,14 @@ def format_mastodon_status(event_data: dict) -> str:
     Format (user-specified):
         Ilargiaren eta Artizarraren hurbilpen hurbila
 
-        📅 Data: 2026ko irailaren 14a
+        📅 2026ko irailaren 14a
 
-        📝 Azalpena:
         Ilargiak eta Artizarrak gaueko zeruan duten hurbiltasunak...
 
-        🔭 Behatzeko informazioa:
+        🔭 Behatzeko:
         Mendebaldeko zeruan, 2026ko irailaren 14an ilundu eta...
 
-        🔗 Xehetasun gehiago: https://in-the-sky.org/news.php?id=...
+        🔗 https://in-the-sky.org/news.php?id=...
         🤖 ZERO espazio digitaletik
 
     Args:
@@ -412,26 +411,25 @@ def format_mastodon_status(event_data: dict) -> str:
     base_lines = []
     base_lines.append(basque_title)
     base_lines.append("")
-    base_lines.append(f"📅 Data: {event_data.get('event_date', '').split('T')[0]}")
+    base_lines.append(f"📅 {event_data.get('event_date', '').split('T')[0]}")
     base_text = "\n".join(base_lines)
 
     # URL and signature (footer — always preserved)
     url = event_data.get("event_page_url", "")
     footer_lines = []
     if url:
-        footer_lines.append(f"🔗 Xehetasun gehiago: {url}")
+        footer_lines.append(f"🔗 {url}")
     footer_lines.append("🤖 ZERO espazio digitaletik")
     footer_text = "\n".join(footer_lines)
 
     # Fixed parts lengths
-    desc_header = "\n📝 Azalpena:\n"
-    viewing_header = "\n🔭 Behatzeko informazioa:\n"
+    viewing_header = "\n🔭 Behatzeko:\n"
     max_desc = 150
 
     # Calculate available space for description + viewing_info
-    # Message structure: base_text + desc_header + desc + "\n" + viewing_header + viewing + "\n" + footer_text
-    # Fixed chars: base_text + desc_header + "\n" + viewing_header + "\n" + footer_text
-    fixed_len = len(base_text) + len(desc_header) + 1 + len(footer_text)  # +1 for blank line after desc
+    # Message structure: base_text + "\n" + desc + "\n" + viewing_header + viewing + "\n" + footer_text
+    # Fixed chars: base_text + "\n" + "\n" + viewing_header + "\n" + footer_text
+    fixed_len = len(base_text) + 1 + 1 + len(footer_text)  # +1 for blank line after desc, +1 for blank line after title
 
     # Reserve max 150 for description
     available_for_viewing = 500 - fixed_len - max_desc - len(viewing_header) - 3  # -3 for "…"
@@ -448,7 +446,7 @@ def format_mastodon_status(event_data: dict) -> str:
             viewing_info = viewing_info[:available_for_viewing - 3] + "…"
 
     # Assemble the message
-    result = base_text + desc_header + rich_desc
+    result = base_text + "\n" + rich_desc
 
     if viewing_info:
         result += "\n" + viewing_header + viewing_info
@@ -458,7 +456,7 @@ def format_mastodon_status(event_data: dict) -> str:
 
     # Safety: if still over 500, remove viewing_info and shrink description
     while len(result) > 500:
-        viewing_start = result.find('🔭 Behatzeko informazioa:')
+        viewing_start = result.find('🔭 Behatzeko:')
         if viewing_start > 0:
             # Remove viewing_info
             newline_after_viewing = result.find("\n\n", viewing_start)
@@ -467,17 +465,10 @@ def format_mastodon_status(event_data: dict) -> str:
                 continue
 
         # Shrink description
-        desc_start = result.find('📝 Azalpena:')
-        if desc_start < 0:
-            break
-        desc_content_start = result.find("\n", desc_start) + 1
-        footer_start = result.rfind("\n\n")
-        if footer_start < 0:
-            footer_start = len(result)
-        max_content = 500 - len(base_text) - len(desc_header) - 1 - len(footer_text) - 3
+        max_content = 500 - len(base_text) - 1 - 1 - len(footer_text) - 3
         if max_content < 0:
             break
-        result = base_text + desc_header + rich_desc[:max(max_content - 3, 0)] + "…"
+        result = base_text + "\n" + rich_desc[:max(max_content - 3, 0)] + "…"
         result += "\n" + footer_text
         break
 

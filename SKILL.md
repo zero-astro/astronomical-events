@@ -162,22 +162,24 @@ The Mastodon format is **user-defined** with strict constraints (max 500 chars):
 ```
 [Title]
 
-📅 Data: [date]
-📝 Azalpena:
+📅 [date]
 [Brief description — max 150 chars]
 
-🔭 Behatzeko informazioa:
+🔭 Behatzeko:
 [Viewing info — fits in remaining space]
 
-🔗 Xehetasun gehiago: [URL]
+🔗 [URL]
 🤖 ZERO espazio digitaletik
 ```
 
 **Format rules:**
 - **No** color priority emoji before title
 - **No** "Mota" (type) or "Denbora" (time) fields
+- **No** "Data:" prefix — only `📅` + date
+- **No** "Azalpena:" header — description follows directly after date
 - **Description** uses `rich_description` (translated), truncated to 150 characters
-- **Viewing info** (`viewing_info`) is included if available, fitting in remaining space (max 500 chars total)
+- **Viewing info** header is `🔭 Behatzeko:` (shortened from "Behatzeko informazioa")
+- **URL** uses only `🔗` + URL (no "Xehetasun gehiago:" prefix)
 - Footer (URL + signature) always present
 - Auto-truncation: if description + viewing info + metadata exceed 500 chars, description is shortened or removed entirely
 
