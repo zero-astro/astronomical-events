@@ -370,81 +370,50 @@ def format_mastodon_status(event_data: dict) -> str:
     """Format event data into a Mastodon-friendly Basque status message.
 
     Format (user-specified):
-        🔵 Merkurioren eta Erisen konjuntzioa
+        Ilargiaren eta Artizarraren hurbilpen hurbila
 
-        📅 Data: 2026ko maiatzaren 2a
-        ⏰ Eguna gaur — 9 ordu inguru geratzen dira
-        🎯 Mota: Konjuntzia planetarioa
-        🔭 Behaketa-maila: 5/5 — Teleskopio handia behar da (12+ haztako)
+        📅 Data: 2026ko irailaren 14a
 
         📝 Azalpena:
+        Ilargiak eta Artizarrak gaueko zeruan duten hurbiltasunak...
 
-        Merkuriok eta 136199 Eris izarrak eskualde zuzen bera partekatuko dute...
+        🔭 Behatzeko informazioa:
+        Mendebaldeko zeruan, 2026ko irailaren 14an ilundu eta...
 
         🔗 Xehetasun gehiago: https://in-the-sky.org/news.php?id=...
         🤖 ZERO espazio digitaletik
 
     Args:
-        event_data: Dict with event information from notification
+        event_data: Dict with event information from notification (prefers translated fields)
 
     Returns:
         Formatted string for Mastodon (max 500 chars)
     """
-    priority = event_data.get("priority", 5)
-    time_label = event_data.get("time_label", "unknown")
-    title = event_data.get("title", "")
-    event_type = event_data.get("event_type", "unknown")
-
-    # Translate title to Basque (cleaned, no date prefix)
-    raw_basque_title = _translate_title(title)
-
-    # Strip any remaining date prefixes from translated titles
     import re
-    basque_title = re.sub(r'^\d{4}ko\s+\w+ren\s+\d+(?:\s*a)?(?:\s*\([^)]*\))?:\s*', '', raw_basque_title)
 
-    # Get emoji for priority level
-    priority_emoji = {1: "🔴", 2: "🟠", 3: "🟡", 4: "🔵", 5: "⚪"}.get(priority, "⚪")
+    # Prefer translated fields, fallback to English
+    basque_title = event_data.get("translated_title") or _translate_title(event_data.get("title", ""))
+    # Strip any remaining date prefixes from translated titles
+    basque_title = re.sub(r'^\d{4}ko\s+\w+ren\s+\d+(?:\s*a)?(?:\s*\([^)]*\))?:\s*', '', basque_title)
 
-    # Translate time label to Basque
-    if time_label == "today":
-        time_basque = "Gaur"
-    elif time_label == "past":
-        time_basque = "Gaur"
-    elif "days away" in time_label:
-        days = time_label.split()[0]
-        time_basque = f"{days} egunetan"
-    else:
-        time_basque = _translate_time_label(time_label)
+    # Use translated rich_description if available, else fallback to English
+    translated_rich_desc = event_data.get("translated_rich_description")
+    if not translated_rich_desc:
+        rich_en = event_data.get("rich_description") or event_data.get("rich_description_en", "")
+        translated_rich_desc = _translate_title(rich_en) if rich_en else ""
 
-    # Translate event type to Basque (with fallback from title)
-    if event_type == "unknown":
-        # Try to infer from title keywords
-        title_lower = basque_title.lower()
-        if "meteor" in title_lower or "shower" in title_lower:
-            event_type_basque = "Meteor-ekasea"
-        elif "eclipse" in title_lower:
-            event_type_basque = "Eclipsea"
-        elif "comet" in title_lower or "komet" in title_lower:
-            event_type_basque = "Kometa"
-        else:
-            event_type_basque = "Gertaera"
-    else:
-        event_type_basque = EVENT_TYPE_DISPLAY.get(event_type, event_type)
+    # Use translated viewing_info if available, else fallback to English
+    translated_viewing = event_data.get("translated_viewing_info")
+    if not translated_viewing:
+        viewing_en = event_data.get("viewing_info") or event_data.get("viewing_info_en", "")
+        translated_viewing = viewing_en  # fallback: use English as-is
 
-    # Build header line
-    lines = []
-    lines.append(f"{priority_emoji} {basque_title}")
-
-    # Technical details section
-    vis_label = event_data.get("visibility_label", "")
-    vis_level = VISIBILITY_LEVEL.get(vis_label, 5)
-    vis_display = VISIBILITY_DISPLAY.get(vis_label, "Ezezaguna") if vis_label else "Ezezaguna"
-
-    lines.append("")
-    lines.append(f"📅 Data: {event_data.get('event_date', '').split('T')[0]}")
-    lines.append(f"⏰ {time_basque}")
-    lines.append(f"🎯 Mota: {event_type_basque}")
-    lines.append(f"🔭 Behaketa-maila: {vis_level}/5 — {vis_display}")
+    # Build base (title + date)
+    base_lines = []
+    base_lines.append(basque_title)
+    base_lines.append("")
+    base_lines.append(f"📅 Data: {event_data.get('event_date', '').split('T')[0]}")
+    base_text = "\n".join(base_lines)
 
     # URL and signature (footer — always preserved)
     url = event_data.get("event_page_url", "")
@@ -454,49 +423,63 @@ def format_mastodon_status(event_data: dict) -> str:
     footer_lines.append("🤖 ZERO espazio digitaletik")
     footer_text = "\n".join(footer_lines)
 
-    # Calculate available space for description
-    # Footer + blank line before it = ~10-60 chars depending on URL length
-    footer_with_blank = len("\n" + footer_text) + 1
-    header_and_meta = "\n".join(lines)
-    meta_len = len(header_and_meta)
+    # Fixed parts lengths
+    desc_header = "\n📝 Azalpena:\n"
+    viewing_header = "\n🔭 Behatzeko informazioa:\n"
+    max_desc = 150
 
-    # Description section (truncated to fit within 500 total, preserving footer)
-    rich_desc = event_data.get("rich_description", "")
-    if rich_desc:
-        lines.append("")
-        lines.append(f"📝 Azalpena:")
-        lines.append("")
-        # Reserve space for footer
-        available_for_desc = 500 - meta_len - len("\n" + "📝 Azalpena:\n") - footer_with_blank - 3  # -3 for "…"
-        if available_for_desc < 50:
-            available_for_desc = 50  # Minimum description
-        max_desc = int(available_for_desc)
-        if len(rich_desc) > max_desc:
-            rich_desc = rich_desc[:max_desc - 3] + "…"
-        lines.append(rich_desc)
+    # Calculate available space for description + viewing_info
+    # Message structure: base_text + desc_header + desc + "\n" + viewing_header + viewing + "\n" + footer_text
+    # Fixed chars: base_text + desc_header + "\n" + viewing_header + "\n" + footer_text
+    fixed_len = len(base_text) + len(desc_header) + 1 + len(footer_text)  # +1 for blank line after desc
 
-    result = "\n".join(lines)
+    # Reserve max 150 for description
+    available_for_viewing = 500 - fixed_len - max_desc - len(viewing_header) - 3  # -3 for "…"
 
-    # Append footer (always preserved)
+    # Build description (truncated to max 150)
+    rich_desc = translated_rich_desc or ""
+    if len(rich_desc) > max_desc:
+        rich_desc = rich_desc[:max_desc - 3] + "…"
+
+    # Build viewing_info (truncated to available space, only if it fits)
+    viewing_info = translated_viewing if available_for_viewing > 50 and translated_viewing else ""
+    if viewing_info:
+        if len(viewing_info) > available_for_viewing - 3:
+            viewing_info = viewing_info[:available_for_viewing - 3] + "…"
+
+    # Assemble the message
+    result = base_text + desc_header + rich_desc
+
+    if viewing_info:
+        result += "\n" + viewing_header + viewing_info
+        result += "\n"  # blank line before footer
+
     result += "\n" + footer_text
 
-    # Final safety check — if still over 500, truncate description further and retry
+    # Safety: if still over 500, remove viewing_info and shrink description
     while len(result) > 500:
-        # Find the description section and shrink it
+        viewing_start = result.find('🔭 Behatzeko informazioa:')
+        if viewing_start > 0:
+            # Remove viewing_info
+            newline_after_viewing = result.find("\n\n", viewing_start)
+            if newline_after_viewing > 0:
+                result = result[:viewing_start] + "\n" + footer_text
+                continue
+
+        # Shrink description
         desc_start = result.find('📝 Azalpena:')
         if desc_start < 0:
-            break  # No description to cut
-        # Cut everything after "Azalpena:" header down to footer
-        before_desc = result[:desc_start]
-        after_header = result[result.find("\n", desc_start) + 1:]  # skip past "📝 Azalpena:\n"
-        # Find where description ends (next blank line or footer)
-        footer_pos = after_header.rfind(footer_lines[-1])
-        if footer_pos < 0:
             break
-        desc_content = after_header[:after_header.find("\n", after_header.find("📡"))].strip() if "📡" in after_header else ""
-        # Just rebuild without description
-        result = before_desc + "\n" + footer_text
-        break  # One-shot: remove desc entirely if nothing fits
+        desc_content_start = result.find("\n", desc_start) + 1
+        footer_start = result.rfind("\n\n")
+        if footer_start < 0:
+            footer_start = len(result)
+        max_content = 500 - len(base_text) - len(desc_header) - 1 - len(footer_text) - 3
+        if max_content < 0:
+            break
+        result = base_text + desc_header + rich_desc[:max(max_content - 3, 0)] + "…"
+        result += "\n" + footer_text
+        break
 
     return result
 
