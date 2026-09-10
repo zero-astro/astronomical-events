@@ -118,20 +118,49 @@ The daemon runs in a loop, fetching events at the configured interval. On failur
 
 ## Mastodon Integration
 
-Post astronomical events to Mastodon with full Basque translations:
+Post astronomical events to Mastodon with full Basque translations using a **user-defined format** (max 500 chars).
 
-```bash
-# Configure Mastodon credentials in .env
-MASTODON_ENABLED=true
-MASTODON_INSTANCE=https://mastodon.example.com
-MASTODON_ACCESS_TOKEN=your_token_here
-
-# Post today's events manually
-python3 scripts/post-today-events.py
-
-# Translate all fields to Basque (title, description, viewing info)
-python3 scripts/translate_all_fields.py --dry-run
+**Step 1 — Create credentials file:**
+Mastodon credentials go in `config/mastodon.json` (relative to skill directory):
+```json
+{
+  "mastodon": {
+    "instance_url": "https://mastodon.eus",
+    "access_token": "your-personal-access-token"
+  }
+}
 ```
+
+**Step 2 — Get an access token:**
+Go to your Mastodon instance → Settings → Development → Personal access tokens → Generate a new token with `write:statuses` scope.
+
+**Step 3 — Post today's events:**
+```bash
+python3 scripts/post-today-events.py
+```
+
+### Mastodon Posting Format
+
+```
+[Title]
+
+📅 Data: [date]
+📝 Azalpena:
+[Brief description — max 150 chars]
+
+🔭 Behatzeko informazioa:
+[Viewing info — fits in remaining space]
+
+🔗 Xehetasun gehiago: [URL]
+🤖 ZERO espazio digitaletik
+```
+
+**Format rules:**
+- No color priority emoji before title
+- No "Mota" (type) or "Denbora" (time) fields
+- Description uses `rich_description`, truncated to 150 characters
+- Viewing info is included if available, fitting in remaining space
+- Auto-truncation to 500 chars total
 
 ### Mastodon Posting Strategy
 
@@ -149,6 +178,42 @@ The system includes comprehensive Basque translations for:
 - Priority tiers and visibility levels
 - Mastodon post footers
 
+### Translation Provider Configuration
+
+**Supported providers:** `libretranslate` (default), `lm-studio`, `ollama`, `openai`
+
+Configure in `.env`:
+
+```bash
+TRANSLATION_ENABLED=true
+TRANSLATION_PROVIDER=libretranslate
+TRANSLATION_LIBRETRANSLATE_API_BASE=https://itzulpenak.artizar-enea.eus
+TRANSLATION_LM_STUDIO_API_BASE=http://192.168.16.20:8080/v1
+TRANSLATION_MODEL=qwen3.6-35b-a3b
+```
+
+- **Libretranslate** (default): Self-hosted machine translation, CPU-only, slower
+- **LM Studio**: Local LLM, no API key needed
+- **Ollama**: Local LLM
+- **OpenAI**: Remote API, requires `OPENAI_API_KEY`
+
+Fallback: if the primary provider fails, the system tries the next provider automatically.
+
+### Translation Workflow
+
+```bash
+# Step 1: Translate missing events
+python3 scripts/main.py translate --lang eu
+
+# Step 2: Sync translations to events table (ALWAYS after translate)
+python3 scripts/sync_translations.py --lang eu
+
+# Step 3: Verify all fields are populated
+python3 scripts/verify_translations.py --lang eu
+```
+
+**⚠ Critical:** `translate` writes to the `translations` table only. **Always run `sync_translations.py`** before querying `events` table for translated data.
+
 ### Adding New Translations
 
 New translations are added to the `_TRANSLATION_MAP` in `src/mastodon_client.py`:
@@ -158,12 +223,6 @@ _TRANSLATION_MAP = {
     "Event name in English": "Itzulpena euskaraz",
     # ... more entries
 }
-```
-
-Use the helper script to translate all database fields:
-```bash
-python3 scripts/translate_all_fields.py  # Live translation
-python3 scripts/translate_all_fields.py --dry-run  # Preview only
 ```
 
 ## Output Format
@@ -252,9 +311,19 @@ python3 -m pytest tests/ -v
    - Adjust `refill_rate` in `.env` if needed
 
 5. **Mastodon posting failures**
-   - Verify credentials in `.env` are correct
+   - Verify credentials in `config/mastodon.json` are correct
    - Check instance URL includes `https://` prefix
    - Review logs for rate limit errors (429 responses)
+
+6. **Translations appear empty after `translate --lang eu`**
+   - Run `sync_translations.py --lang eu` to sync translations table → events table
+   - This is the most common issue — always sync after translation
+
+7. **Translation provider fails**
+   - Check `.env` has correct `TRANSLATION_PROVIDER` and API base URL
+   - Libretranslate on CPU-only is slow — be patient
+   - System will fallback to next provider automatically
+   - Check logs to see which provider was used
 
 ## Project Structure
 

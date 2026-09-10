@@ -102,6 +102,33 @@ Level 1: Naked eye | Level 2: Binoculars | Level 3: Small telescope | Level 4: M
 
 The system includes full Basque translations for all event types, time labels, and UI elements.
 
+### Translation Provider Configuration
+
+**Supported providers:** `libretranslate` (default), `lm-studio`, `ollama`, `openai`
+
+The system supports multiple translation providers with automatic fallback. Configure in `.env`:
+
+```bash
+TRANSLATION_ENABLED=true
+TRANSLATION_PROVIDER=libretranslate          # libretranslate | lm-studio | ollama | openai
+TRANSLATION_LIBRETRANSLATE_API_BASE=https://itzulpenak.artizar-enea.eus
+TRANSLATION_LM_STUDIO_API_BASE=http://192.168.16.20:8080/v1
+TRANSLATION_OLLAMA_API_BASE=http://localhost:11434/v1
+TRANSLATION_OPENAI_API_BASE=https://api.openai.com/v1
+TRANSLATION_MODEL=qwen3.6-35b-a3b           # LM Studio/Ollama model name
+OPENAI_API_KEY=your_openai_key_here         # Only for openai provider
+TRANSLATION_SOURCE_LANG=en                  # Source language (default: en)
+TARGET_LANGUAGES=eu,ca                      # Target languages
+```
+
+**Provider selection:**
+- **Libretranslate** (default) — Self-hosted at `https://itzulpenak.artizar-enea.eus/`. Machine translation, no GPU needed. Slower on CPU-only environments.
+- **LM Studio** — Local LLM at `http://192.168.16.20:8080/v1`. No API key needed.
+- **Ollama** — Local LLM at `http://localhost:11434/v1`.
+- **OpenAI** — Remote API. Requires `OPENAI_API_KEY`.
+
+**Fallback behavior:** If the primary provider fails, the system attempts the next provider in the chain. All providers are configurable via environment variables — no code changes needed.
+
 ### Mastodon Posting (Basque)
 
 Post events to Mastodon with automatic Basque translation.
@@ -127,6 +154,34 @@ The script reads `config/mastodon.json` from the workspace root:
 # Ensure MASTODON_ENABLED=true in .env
 python3 scripts/post-today-events.py
 ```
+
+### Mastodon Posting Format
+
+The Mastodon format is **user-defined** with strict constraints (max 500 chars):
+
+```
+[Title]
+
+📅 Data: [date]
+📝 Azalpena:
+[Brief description — max 150 chars]
+
+🔭 Behatzeko informazioa:
+[Viewing info — fits in remaining space]
+
+🔗 Xehetasun gehiago: [URL]
+🤖 ZERO espazio digitaletik
+```
+
+**Format rules:**
+- **No** color priority emoji before title
+- **No** "Mota" (type) or "Denbora" (time) fields
+- **Description** uses `rich_description` (translated), truncated to 150 characters
+- **Viewing info** (`viewing_info`) is included if available, fitting in remaining space (max 500 chars total)
+- Footer (URL + signature) always present
+- Auto-truncation: if description + viewing info + metadata exceed 500 chars, description is shortened or removed entirely
+
+**⚠ Configuration path:** Mastodon credentials are loaded from `config/mastodon.json` relative to the skill directory. If the file is missing, `load_mastodon_config()` returns `{}` and posting silently fails. Always verify the file exists.
 
 ### Posting a Single Event (Manual)
 
@@ -308,10 +363,11 @@ cd /home/urtzai/.hermes/skills/astronomical-events
 cd /home/urtzai/.hermes/skills/astronomical-events
 .venv/bin/python scripts/main.py translate --lang eu
 ```
-- Uses `src/translator.py` `translate_missing_events()` → per-event loop (one LLM call per event, no mixing)
-- llama.cpp at `http://192.168.16.20:8080/v1` (LM Studio), no access token needed
+- Uses `src/translate.py` `translate_missing_events()` → per-event loop (one request per event, no mixing)
+- Default provider: Libretranslate at `https://itzulpenak.artizar-enea.eus/` (CPU-only, slow)
+- Fallback: LM Studio at `http://192.168.16.20:8080/v1`
 - Translates: `title`, `description`, `rich_description_en`, `viewing_info_en` → Basque
-- Sequential mode (5s delay between requests to avoid LM Studio CPU timeouts)
+- Sequential mode (5s delay between requests to avoid timeouts)
 - Idempotent: only processes missing events
 
 **Step 3 — Generate rich_description_en & viewing_info_en (LLM, not scraping):**
@@ -350,7 +406,7 @@ cd /home/urtzai/.hermes/skills/astronomical-events
 
 ### Translation Cache (T1) — Skip API for unchanged content
 
-Translations are cached in SQLite (`translation_cache` table). On re-runs, the system checks the cache before calling the LLM API. If a source text was already translated to the target language and field type, it's served from cache instantly.
+Translations are cached in SQLite (`translation_cache` table). On re-runs, the system checks the cache before calling the translation API. If a source text was already translated to the target language and field type, it's served from cache instantly.
 
 **Cache key:** `(source_lang, target_lang, field_type, hash(source_text))`
 - `field_type`: `'title'`, `'description'`, `'rich_description'`, or `'viewing_info'`
@@ -369,25 +425,24 @@ python3 scripts/main.py translate --clear-cache
 TRANSLATION_TARGET_LANG=eu python3 -c "from db_manager import DatabaseManager; db = DatabaseManager(); db.invalidate_cache(target_lang='eu'); db.close()"
 ```
 
-### Translation Speed Tip
+### Translation Speed Tips
 
-Translation is sequential (one event at a time) with a **5-second delay** between requests to avoid LM Studio CPU timeouts. For faster iteration, edit `src/translator.py` line ~128:
-
-```python
-delay = 1  # seconds between requests (default: 5)
-```
+- Libretranslate on CPU-only environments is slow — be patient
+- Translation is sequential (one event at a time) with a **5-second delay** between requests
+- For faster iteration, edit `src/translate.py` delay parameter (default: 5)
 
 ### Parallel Translation Note
 
-`global_batch_translate()` runs field-type batches **sequentially** by default because LM Studio processes one request at a time. Parallel (`ThreadPoolExecutor`) was tested but reverted — it would only queue requests without speeding things up.
+`global_batch_translate()` runs field-type batches **sequentially** by default. Parallel (`ThreadPoolExecutor`) was tested but reverted — it would only queue requests without speeding things up.
 
-If you switch to a provider that supports concurrent requests (e.g., OpenAI API, Ollama with `--parallel`), re-enable parallel in `src/translate.py` line ~628 by uncommenting the `ThreadPoolExecutor(max_workers=2)` block and removing the sequential fallback code.
+If you switch to a provider that supports concurrent requests (e.g., OpenAI API, Ollama with `--parallel`), re-enable parallel in `src/translate.py` by uncommenting the `ThreadPoolExecutor(max_workers=2)` block.
 
-The translation provider defaults to `lm-studio` at `http://192.168.16.20:1234/v1` with model `qwen3.6-35b-a3b`. Override via env vars:
+The translation provider defaults to `libretranslate` at `https://itzulpenak.artizar-enea.eus/`. Override via env vars:
 
 ```bash
-TRANSLATION_PROVIDER=openai   # or lm-studio, ollama
-TRANSLATION_LM_STUDIO_API_BASE=http://localhost:1234/v1
+TRANSLATION_PROVIDER=libretranslate   # or lm-studio, ollama, openai
+TRANSLATION_LIBRETRANSLATE_API_BASE=https://itzulpenak.artizar-enea.eus
+TRANSLATION_LM_STUDIO_API_BASE=http://192.168.16.20:8080/v1
 TRANSLATION_MODEL=your-model-name
 OPENAI_API_KEY=sk-...         # for openai provider
 ```
@@ -407,12 +462,12 @@ OPENAI_API_KEY=sk-...         # for openai provider
 | `ModuleNotFoundError: feedparser` | Run `.venv/bin/pip install -e .` |
 | `FastAPI not installed` blocking non-dashboard commands | Fixed in code (lazy import). If still seen, run `pip install fastapi uvicorn` or ignore — dashboard is the only command that needs it. |
 | f-string syntax error (`unmatched '['`) in `main.py` | The file uses nested quotes in f-strings on Python 3.12+. Fixed by changing inner quotes to single quotes. If re-editing, avoid `{item["title"]}` inside double-quoted f-strings — use `{item['title']}` or escape. |
-| Translation takes forever (5s delay × N events) | Reduce `delay` in `src/translator.py`. For 12 events at 5s each: ~60s + LLM inference time (~3-4s per call). |
-| LM Studio health check fails → circuit breaker opens | The translator checks `http://192.168.16.20:1234/api/health` before translating. If the local LLM isn't running, translations are skipped. Start LM Studio first. |
-| `translate --lang eu` times out mid-run | Long translation runs can exceed the 600s timeout, leaving some events untranslated. The script is idempotent — just re-run `.venv/bin/python scripts/main.py translate --lang eu`; it only processes missing events. Check progress with `status` between runs. |
-| Translation cache stale (wrong translations) | If you changed the translation prompt or model, old cached results may be inaccurate. Clear cache first: see "Translation Cache" section above. |
-| Manual `translate_single_event()` API changed | Module-level functions in `src/translator.py` expect an object with `.news_id`, `.title`, `.description` attributes (not a dict). Use the CLI instead of hand-calling module internals — the CLI handles the object construction correctly. |
-| LM Studio is single-request only — never use `ThreadPoolExecutor` or async for translation calls | LM Studio processes one request at a time. Parallelizing translation requests (`global_batch_translate`, `translate_all_fields.py`) will NOT speed things up — it just queues them sequentially with extra overhead. Always run translations sequentially. If you switch to OpenAI API or Ollama with `--parallel`, re-enable parallelism then. |
+|| Translation takes forever | Libretranslate on CPU-only is slow. Reduce `delay` in `src/translate.py`. For 12 events at 5s each: ~60s + inference time. |
+|| Translation provider fails → fallback | System automatically tries next provider. Check logs for which provider was used. |
+|| `translate --lang eu` times out mid-run | Long translation runs can exceed the 600s timeout, leaving some events untranslated. The script is idempotent — just re-run. Check progress with `status` between runs. |
+|| Translation cache stale (wrong translations) | If you changed the translation provider or model, old cached results may be inaccurate. Clear cache first: see "Translation Cache" section above. |
+|| Manual `translate_single_event()` API changed | Module-level functions in `src/translate.py` expect an object with `.news_id`, `.title`, `.description` attributes (not a dict). Use the CLI instead of hand-calling module internals. |
+|| Sequential translation only | Libretranslate and LM Studio process one request at a time. Never use `ThreadPoolExecutor` or async for translation calls. If you switch to OpenAI API or Ollama with `--parallel`, re-enable parallelism then.
 
 ## References
 
