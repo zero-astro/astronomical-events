@@ -1,0 +1,21 @@
+{
+  "_comment": "Telegram notification providers — ordered list, primary first. Fallback on failure.",
+  "providers": [
+    {
+      "id": "hermes-main",
+      "name": "Hermes Main Bot",
+      "enabled": true,
+      "base_url": "https://api.telegram.org",
+      "bot_token_env": "HERMES_TELEGRAM_BOT_TOKEN",
+      "chat_id_env": "HERMES_TELEGRAM_CHAT_ID"
+    },
+    {
+      "id": "hermes-fallback",
+      "name": "Hermes Fallback Bot",
+      "enabled": false,
+      "base_url": "https://api.telegram.org",
+      "bot_token_env": "HERMES_TELEGRAM_FALLBACK_TOKEN",
+      "chat_id_env": "HERMES_TELEGRAM_CHAT_ID"
+    }
+  ]
+}

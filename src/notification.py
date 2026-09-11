@@ -26,11 +26,7 @@ from mastodon_client import (
     format_mastodon_status,
     format_mastodon_digest
 )
-from telegram_notifier import (
-    load_telegram_config,
-    send_telegram_notification,
-    send_telegram_digest,
-)
+from telegram_notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -247,8 +243,8 @@ def post_individual_events(config: dict) -> dict:
     mastodon_config = load_mastodon_config()
     mastodon_enabled = bool(mastodon_config)
 
-    telegram_config = load_telegram_config()
-    telegram_enabled = bool(telegram_config)
+    notifier = TelegramNotifier()
+    telegram_enabled = len(notifier.providers) > 0
 
     stats = {"sent_immediate": 0, "sent_batch": 0, "failed": 0}
 
@@ -292,7 +288,8 @@ def post_individual_events(config: dict) -> dict:
 
                 if telegram_enabled:
                     try:
-                        send_telegram_notification(telegram_config, formatted)
+                        notifier.send_event(formatted)
+                        logger.info("Telegram notification sent")
                     except Exception as e:
                         logger.error(f"Telegram notification failed for {event.news_id}: {e}")
                         stats["failed"] += 1
@@ -320,7 +317,8 @@ def post_individual_events(config: dict) -> dict:
 
                     if telegram_enabled:
                         try:
-                            send_telegram_notification(telegram_config, formatted)
+                            notifier.send_event(formatted)
+                            logger.info("Telegram notification sent")
                         except Exception as e:
                             logger.error(f"Telegram notification failed for {event.news_id}: {e}")
                             stats["failed"] += 1
@@ -361,8 +359,8 @@ def post_digest(config: dict) -> dict:
     mastodon_config = load_mastodon_config()
     mastodon_enabled = bool(mastodon_config)
 
-    telegram_config = load_telegram_config()
-    telegram_enabled = bool(telegram_config)
+    notifier = TelegramNotifier()
+    telegram_enabled = len(notifier.providers) > 0
 
     stats = {"sent_digest": 0, "failed": 0}
 
@@ -394,7 +392,7 @@ def post_digest(config: dict) -> dict:
 
         if telegram_enabled:
             try:
-                send_telegram_digest(telegram_config, formatted)
+                notifier.send_text(format_telegram_digest(formatted))
                 logger.info("Telegram digest sent")
             except Exception as e:
                 logger.error(f"Telegram digest failed: {e}")
@@ -412,6 +410,22 @@ def post_digest(config: dict) -> dict:
     return stats
 
 
+def format_telegram_digest(events: list[dict]) -> str:
+    """Format a list of events into a Telegram Markdown digest message."""
+    lines = ["🔭 *Hurrengo gertakariak:*", ""]
+    for evt in events:
+        title = evt.get("title", "Gertakaririk gabe")
+        date = evt.get("time_label", "")
+        emoji = evt.get("priority_emoji", "")
+        vis = f" | {evt.get('visibility_label', '')}" if "visibility_label" in evt else ""
+        lines.append(f"{emoji} *{title}*")
+        if date:
+            lines.append(f"📅 {date}{vis}")
+        lines.append("")
+    lines.append("🤖 *ZERO espazio digitaletik*")
+    return "\n".join(lines)
+
+
 def send_notifications(config: dict) -> dict:
     """Main notification dispatch function (calls both individual + digest).
 
@@ -427,11 +441,8 @@ def send_notifications(config: dict) -> dict:
     db = DatabaseManager(config["db_path"])
     target_langs = _get_target_langs(db)
 
-    mastodon_config = load_mastodon_config()
-    mastodon_enabled = bool(mastodon_config)
-
-    telegram_config = load_telegram_config()
-    telegram_enabled = bool(telegram_config)
+    notifier = TelegramNotifier()
+    telegram_enabled = len(notifier.providers) > 0
 
     # Delegate to separate functions for individual events and digest
     stats_individual = post_individual_events(config)
