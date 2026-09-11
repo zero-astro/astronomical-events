@@ -29,6 +29,29 @@ import requests
 log = logging.getLogger(__name__)
 
 
+def _load_dotenv(workspace_dir: str):
+    """Load .env file if present."""
+    env_path = Path(workspace_dir) / ".env"
+    if not env_path.is_file():
+        return
+    try:
+        with open(env_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                # Remove surrounding quotes if present
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                    value = value[1:-1]
+                if key not in os.environ:
+                    os.environ[key] = value
+    except Exception as exc:
+        log.warning("Failed to load .env: %s", exc)
+
+
 class TelegramProvider:
     """A single Telegram bot provider with token and chat ID from env vars."""
 
@@ -97,6 +120,8 @@ class TelegramNotifier:
         if workspace_dir is None:
             workspace_dir = os.environ.get("WORKSPACE_DIR", "")
         self.workspace_dir = workspace_dir or str(Path(__file__).resolve().parent.parent)
+        # Load .env if present
+        _load_dotenv(self.workspace_dir)
         self.providers: List[TelegramProvider] = self._load_providers()
         log.info("Telegram notifier loaded %d provider(s)", len(self.providers))
 
