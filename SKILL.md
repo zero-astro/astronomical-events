@@ -7,9 +7,9 @@ description: Track astronomical events. Fetch RSS, translate to Basque.
 
 ## Overview
 
-Fetches astronomical news from in-the-sky.org RSS feed, stores them in SQLite, classifies by priority, and outputs structured notifications for OpenClaw routing.
+Fetches astronomical news from in-the-sky.org RSS feed, stores them in SQLite, classifies by priority, and outputs structured notifications for routing.
 
-**OpenClaw Integration:** This skill does NOT require a Telegram bot token. Instead, it outputs deterministic JSON to stdout that OpenClaw can route through any channel (Telegram, WhatsApp, etc.) via heartbeat/cron triggers.
+**Agent Integration:** This skill outputs deterministic JSON to stdout that any agent system can route through channels (Telegram, WhatsApp, Mastodon, etc.) via heartbeat/cron triggers.
 
 ## Setup (first-time only)
 
@@ -82,7 +82,7 @@ Set environment variables in `.env`:
 - `FETCH_INTERVAL_MINUTES` — How often to fetch (default: 60)
 - `NOTIFICATION_WINDOW_DAYS` — Days ahead to track events (default: 15)
 
-**No Telegram bot token required.** OpenClaw handles channel routing.
+**No Telegram bot token required.** Channel routing is handled via stdout JSON.
 
 ## Priority Tiers
 

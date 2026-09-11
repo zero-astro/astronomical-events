@@ -82,8 +82,8 @@ After=network-online.target
 [Service]
 Type=simple
 User=urtzai
-WorkingDirectory=/home/urtzai/.openclaw/skills/astronomical-events
-ExecStart=/home/urtzai/.openclaw/skills/astronomical-events/.venv/bin/python3 scripts/main.py schedule --daemon
+WorkingDirectory=/home/urtzai/.hermes/skills/astronomical-events
+ExecStart=/home/urtzai/.hermes/skills/astronomical-events/.venv/bin/python3 scripts/main.py schedule --daemon
 Restart=on-failure
 RestartSec=60
 
@@ -102,27 +102,27 @@ journalctl -u astronomical-events -f  # Follow logs
 
 ---
 
-## OpenClaw Integration
+## Agent Integration
 
-The skill is designed to work with **OpenClaw** via stdout JSON routing.
+The skill is designed to work with any agent system via stdout JSON routing.
 
 ### Cron trigger (heartbeat)
 
-Add to your OpenClaw heartbeat or cron configuration:
+Add to your cron configuration:
 
 ```bash
 # Every hour at :05
-0 * * * * cd /home/urtzai/.openclaw/skills/astronomical-events && .venv/bin/python3 scripts/main.py schedule --run-once >> logs/cron.log 2>&1
+0 * * * * cd /home/urtzai/.hermes/skills/astronomical-events && .venv/bin/python3 scripts/main.py schedule --run-once >> logs/cron.log 2>&1
 ```
 
-### OpenClaw skill config
+### Skill config
 
-In your `skills.json` or equivalent:
+In your agent's skill configuration:
 
 ```json
 {
   "astronomical-events": {
-    "path": "/home/urtzai/.openclaw/skills/astronomical-events",
+    "path": "/home/urtzai/.hermes/skills/astronomical-events",
     "trigger": "cron",
     "schedule": "0 * * * *"
   }
@@ -187,7 +187,7 @@ python3 scripts/main.py status
 ```bash
 cp data/events.db data/events.db.backup
 # Or use cron for automated backups:
-0 3 * * * cp /home/urtzai/.openclaw/skills/astronomical-events/data/events.db /backup/astronomical-events-$(date +\%Y-\%m-\%d).db
+0 3 * * * cp /home/urtzai/.hermes/skills/astronomical-events/data/events.db /backup/astronomical-events-$(date +\%Y-\%m-\%d).db
 ```
 
 ### Restore from backup
@@ -203,7 +203,7 @@ sudo systemctl restart astronomical-events
 ## Updating
 
 ```bash
-cd /home/urtzai/.openclaw/skills/astronomical-events
+cd /home/urtzai/.hermes/skills/astronomical-events
 git pull origin main
 pip install -r requirements.txt  # If new dependencies added
 # No database migrations needed (SQLite schema is stable)

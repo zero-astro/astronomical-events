@@ -2,14 +2,14 @@
 
 ## 1. Overview
 
-A background service that periodically fetches astronomical event data from **in-the-sky.org** RSS feed, stores it in a SQLite database, classifies events by priority, and outputs structured JSON notifications routed by OpenClaw through any channel (Telegram, WhatsApp, Mastodon, etc.).
+A background service that periodically fetches astronomical event data from **in-the-sky.org** RSS feed, stores it in a SQLite database, classifies events by priority, and outputs structured JSON notifications routed through any channel (Telegram, WhatsApp, Mastodon, etc.) via stdout.
 
 ### Key Requirements
 - Fetch RSS: `https://in-the-sky.org/rss.php?feed=dfan&latitude=43.139006&longitude=-2.966625&timezone=Europe/Madrid`
 - Store in SQLite on the server
 - Display events within a **15-day window**
 - Classify by priority (low → high)
-- Output structured JSON notifications (routed by OpenClaw to any channel)
+- Output structured JSON notifications (routed to any channel via stdout)
 - Mastodon posting when configured
 
 ---
@@ -201,9 +201,9 @@ CREATE INDEX idx_fetch_log_fetched_at ON fetch_log(fetched_at DESC);
                                     ┌─────────────┼───────────────┐
                                     ▼             ▼               ▼
                               ┌──────────┐  ┌──────────┐  ┌──────────┐
-                              │ OpenClaw │  │ Mastodon │  │ Stdout   │
-                              │ stdout   │  │ (if      │  │ JSON     │
-                              │ routing  │  │ config'd)│  │ output   │
+                              │ Stdout   │  │ Mastodon │  │ Stdout   │
+                              │ (JSON)   │  │ (if      │  │ JSON     │
+                              │          │  │ config'd)│  │ output   │
                               └──────────┘  └──────────┘  └──────────┘
 ```
 
@@ -313,14 +313,14 @@ Classification Summary:
 ---
 
 ### Phase 3: Notification System — COMPLETED ✅
-**Goal:** Send structured notifications for new and high-priority events via OpenClaw routing.
+**Goal:** Send structured notifications for new and high-priority events via stdout JSON routing.
 
 **Completion Date:** April 21, 2026
 
 **Tasks Completed:**
-1. [x] **OpenClaw stdout JSON routing** (instead of Telegram bot):
+1. [x] **Stdout JSON routing** (instead of Telegram bot):
    - No Telegram bot token required — outputs deterministic JSON to stdout
-   - OpenClaw routes notifications through any channel (Telegram, WhatsApp, etc.)
+   - Any agent system routes notifications through any channel (Telegram, WhatsApp, etc.)
    - `telegram_notifier.py` is a stub module (imports satisfied only)
 2. [x] **Message formatter** (`notification.py`):
    - `_format_event_for_output()` — fixed-schema dict per event
@@ -341,7 +341,7 @@ Classification Summary:
 6. [x] Basic error handling with try/except and stats tracking
 
 **Key Differences from Plan:**
-- ❌ No Telegram bot/client — replaced by OpenClaw stdout JSON routing (more flexible, multi-channel capable)
+- ❌ No Telegram bot/client — replaced by stdout JSON routing (more flexible, multi-channel capable)
 - ✅ Mastodon integration added as bonus channel
 - ⚠️ Retry logic not implemented (basic error handling only)
 
@@ -377,7 +377,7 @@ Classification Summary:
 5. [x] Tests: unit tests for parser/classifier, integration tests for DB — 10+ test files in `tests/`
 6. [x] Documentation: README (228 lines), deployment guide via systemd service config (`astronomical-events.service`)
 
-**Note:** Tasks 2-3 require a Telegram bot client. The system uses stdout JSON routing instead of direct Telegram API calls, so these commands would need to be implemented as CLI flags or OpenClaw session commands rather than Telegram bot commands.
+**Note:** Tasks 2-3 require a Telegram bot client. The system uses stdout JSON routing instead of direct Telegram API calls, so these commands would need to be implemented as CLI flags or agent session commands rather than Telegram bot commands.
 
 **Deliverable:** ✅ Production-ready system with monitoring (dashboard), caching, tests, and documentation.
 
@@ -470,7 +470,7 @@ astronomical-events-notify/
 | RSS Parsing | `feedparser` | Robust, handles edge cases |
 | Database | SQLite (built-in) | Zero-config, file-based, perfect for single-user |
 | HTML Parsing | `beautifulsoup4` + `lxml` | Reliable event page scraping |
-| Notification routing | OpenClaw stdout JSON | Multi-channel (Telegram, WhatsApp, etc.) |
+|| Notification routing | Stdout JSON | Multi-channel (Telegram, WhatsApp, etc.) |
 | Mastodon | `mastodon.py` / custom client | Optional social media posting |
 | Scheduling | `apscheduler` or cron | Flexible scheduling options |
 | Logging | Python `logging` module | Structured JSON output |

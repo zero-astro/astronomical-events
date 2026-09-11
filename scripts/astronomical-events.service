@@ -10,9 +10,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /home/urtzai/.openclaw/skills/astronomical-events/scripts/main.py schedule
-WorkingDirectory=/home/urtzai/.openclaw/skills/astronomical-events
-EnvironmentFile=/home/urtzai/.openclaw/skills/astronomical-events/.env
+ExecStart=/usr/bin/python3 /home/urtzai/.hermes/skills/astronomical-events/scripts/main.py schedule
+WorkingDirectory=/home/urtzai/.hermes/skills/astronomical-events
+EnvironmentFile=/home/urtzai/.hermes/skills/astronomical-events/.env
 
 # Logging
 StandardOutput=journal
@@ -28,7 +28,7 @@ StartLimitIntervalSec=300
 # Security hardening
 NoNewPrivileges=true
 ProtectHome=read-only
-ReadWritePaths=/home/urtzai/.openclaw/skills/astronomical-events/data
+ReadWritePaths=/home/urtzai/.hermes/skills/astronomical-events/data
 
 [Install]
 WantedBy=multi-user.target

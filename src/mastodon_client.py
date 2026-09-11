@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 def load_mastodon_config() -> dict:
     """Load Mastodon credentials from config file."""
     # Resolve workspace path: env var > relative to skill dir
-    ws = os.environ.get("OPENCLAW_WORKSPACE_DIR", "")
+    ws = os.environ.get("HERMES_WORKSPACE_DIR", "")
     if not ws:
         # Skill is at ~/.hermes/skills/astronomical-events/src/
         skill_dir = Path(__file__).resolve().parent.parent

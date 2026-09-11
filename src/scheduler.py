@@ -1,7 +1,7 @@
 """Scheduling & Automation - Astronomical Events Skill.
 
 Provides cron-like scheduling for automated RSS fetches and notifications.
-Designed to run as a systemd service or via OpenClaw cron/heartbeat.
+Designed to run as a systemd service or via cron/heartbeat.
 
 Usage:
     python3 scripts/main.py schedule --run-once   # Run one cycle (fetch + notify)

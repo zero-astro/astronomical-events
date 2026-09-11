@@ -1,6 +1,6 @@
-"""Notification system - Astronomical event notifications for OpenClaw.
+"""Notification system - Astronomical event notifications.
 
-This module outputs structured notification data that OpenClaw can route
+This module outputs structured notification data that can be routed
 through any channel (Telegram, WhatsApp, etc.) via heartbeat/cron triggers.
 
 Usage:
@@ -170,7 +170,7 @@ def _format_event_for_output(event: Event, db: DatabaseManager | None = None, ta
 def _format_notification_message(events: list[dict], batch_label: str) -> dict:
     """Format a notification message in deterministic structure.
 
-    Returns a dict with fixed keys that OpenClaw can render consistently
+    Returns a dict with fixed keys that any agent can render consistently
     across all channels (Telegram, WhatsApp, etc.).
     """
     return {

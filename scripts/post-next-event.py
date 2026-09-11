@@ -4,7 +4,7 @@
 Usage:
     python3 post-next-event.py
 
-Outputs JSON with result info for OpenClaw to report back.
+Outputs JSON with result info for reporting back.
 """
 
 import sys
