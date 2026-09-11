@@ -22,14 +22,14 @@ The `mastodon_client.py` resolves the workspace path by walking up from `src/` t
 When posting via `post-next-event.py` or `post-today-events.py`, you MUST set:
 
 ```bash
-HERMES_WORKSPACE_DIR=/home/urtzai/.hermes/skills/astronomical-events
+WORKSPACE_DIR=/home/urtzai/.hermes/skills/astronomical-events
 ```
 
 Without it, the config file is not found and posting fails silently.
 
 ### Example cron command:
 ```bash
-HERMES_WORKSPACE_DIR=/home/urtzai/.hermes/skills/astronomical-events \
+WORKSPACE_DIR=/home/urtzai/.hermes/skills/astronomical-events \
   cd /home/urtzai/.hermes/skills/astronomical-events && .venv/bin/python scripts/post-next-event.py
 ```
 
@@ -53,7 +53,7 @@ This is NOT in the base `pyproject.toml` — install separately.
 ## Common Errors
 
 ### "Mastodon config not found"
-→ Set `HERMES_WORKSPACE_DIR` env var (see above) or verify `config/mastodon.json` exists at the resolved path.
+→ Set `WORKSPACE_DIR` env var (see above) or verify `config/mastodon.json` exists at the resolved path.
 
 ### "Mastodon authentication failed"
 → Check access_token is valid and has `write:statuses` scope. Regenerate if expired.
